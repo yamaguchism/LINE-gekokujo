@@ -1403,26 +1403,24 @@ app.post('/webhook', middleware(lineConfig), async (req, res) => {
       const curLocName = getCurrentLocationName(player);
       const reservedName = getReservedDisplayName(player.reservedLocation);
       const resNotice = player.reservedLocation ? `（次回予約: 『${reservedName}』）` : '';
-      
       const minimalText = `📍 現在地：${curLocName} ${resNotice}\n▼ 下のボタンから進軍先を選べ。`;
 
-      const textMsg = {
+      const mapImageUrl = resolveMapImageUrl(player, req);
+      const replyMessages = [];
+
+      if (mapImageUrl) {
+        replyMessages.push({
+          type: 'image',
+          originalContentUrl: mapImageUrl,
+          previewImageUrl: mapImageUrl,
+        });
+      }
+
+      replyMessages.push({
         type: 'text',
         text: minimalText,
         quickReply: makeQuickReply(getSmartButtons(player)),
-      };
-
-      const mapImageUrl = resolveMapImageUrl(player, req);
-      const replyMessages = mapImageUrl
-        ? [
-            {
-              type: 'image',
-              originalContentUrl: mapImageUrl,
-              previewImageUrl: mapImageUrl,
-            },
-            textMsg,
-          ]
-        : [textMsg];
+      });
 
       await lineClient.replyMessage({
         replyToken: event.replyToken,
@@ -2112,6 +2110,36 @@ ${player.weapon} [${total}/5枠]
 ・🧨 黒火薬: ${player.inventory['黒火薬']}/${cap}個
 ・🔮 魔導石: ${player.inventory['魔導石']}/${cap}個
 ・🍞 兵糧: ${player.inventory['兵糧']}/${getRationCap(player)}袋`,
+          quickReply: makeQuickReply(getSmartButtons(player)),
+        }],
+      });
+
+    // ★ 開発テスト用裏ワザ：素材マックス補充（他機能に一切干渉しない独立ブロック）
+    } else if (userText === '素材マックス' || userText === '素材MAX' || userText === '裏ワザ') {
+      const maxMat = Math.max(getMaterialCap(player), 15);
+      const maxRat = Math.max(getRationCap(player), 30);
+      player.inventory['王国鋼'] = maxMat;
+      player.inventory['装甲板'] = maxMat;
+      player.inventory['黒火薬'] = maxMat;
+      player.inventory['魔導石'] = maxMat;
+      player.inventory['兵糧'] = maxRat;
+      allPlayers[userId] = player;
+      saveAllPlayers(allPlayers);
+
+      await lineClient.replyMessage({
+        replyToken: event.replyToken,
+        messages: [{
+          type: 'text',
+          text:
+`💎【裏ワザ発動：全素材＆兵糧MAX補充完了！】
+ガルガン卿の隠し倉庫から最高級物資をすべて運び込んだぞ！
+・⛏️ 王国鋼: ${player.inventory['王国鋼']}個
+・🛡️ 装甲板: ${player.inventory['装甲板']}個
+・🧨 黒火薬: ${player.inventory['黒火薬']}個
+・🔮 魔導石: ${player.inventory['魔導石']}個
+・🍞 兵糧: ${player.inventory['兵糧']}袋
+
+▼ 好きなだけ「🔨 鍛造」や「🏰 アジト強化」を試して進軍しろ！`,
           quickReply: makeQuickReply(getSmartButtons(player)),
         }],
       });
