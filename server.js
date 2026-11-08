@@ -4,6 +4,7 @@ import { middleware, messagingApi } from '@line/bot-sdk';
 import cron from 'node-cron';
 import fs from 'fs';
 import path from 'path';
+import { createClient } from '@supabase/supabase-js';
 
 // 1. 分割した各専門モジュールのインポート
 import { MAP_LOCATIONS, DEFENSE_ENEMIES } from './gameData.js';
@@ -19,7 +20,7 @@ import {
 import { generateRaidNarrative } from './aiService.js';
 
 // ==========================================
-// 2. 各種設定（環境変数＆LINE API初期化）
+// 2. 各種設定（環境変数＆LINE API・Supabase初期化）
 // ==========================================
 const channelAccessToken = process.env.LINE_CHANNEL_ACCESS_TOKEN || process.env.CHANNEL_ACCESS_TOKEN;
 const channelSecret = process.env.LINE_CHANNEL_SECRET || process.env.CHANNEL_SECRET;
@@ -34,31 +35,44 @@ const lineClient = new MessagingApiClient({
   channelAccessToken,
 });
 
+// Supabase クライアント初期化
+const supabaseUrl = process.env.SUPABASE_URL;
+const supabaseKey = process.env.SUPABASE_ANON_KEY || process.env.SUPABASE_KEY;
+const supabase = (supabaseUrl && supabaseKey)
+  ? createClient(supabaseUrl, supabaseKey)
+  : null;
+
+if (!supabase) {
+  console.warn('⚠️ [警告] SUPABASE_URL または SUPABASE_ANON_KEY が未設定のためローカルファイル保存で動作します。');
+} else {
+  console.log('✅ Supabase 接続クライアント初期化完了');
+}
+
 const app = express();
 
 // public フォルダ内の画像（chapter3_world_map.png 等）を外部公開
 app.use('/public', express.static(path.resolve('public')));
 
 // ==========================================
-// 3. プレイヤーデータ永続化＆自動マイグレーション
+// 3. プレイヤーデータ永続化（Supabase ＆ ローカルバックアップ連動）＆自動マイグレーション
 // ==========================================
 const DB_FILE = path.resolve('players.json');
 
-function loadAllPlayers() {
+function loadLocalPlayers() {
   if (!fs.existsSync(DB_FILE)) return {};
   try {
     return JSON.parse(fs.readFileSync(DB_FILE, 'utf-8'));
   } catch (err) {
-    console.error('データ読み込みエラー:', err);
+    console.error('ローカルデータ読み込みエラー:', err);
     return {};
   }
 }
 
-function saveAllPlayers(data) {
+function saveLocalPlayers(data) {
   try {
     fs.writeFileSync(DB_FILE, JSON.stringify(data, null, 2), 'utf-8');
   } catch (err) {
-    console.error('データ保存エラー:', err);
+    console.error('ローカルデータ保存エラー:', err);
   }
 }
 
@@ -115,14 +129,9 @@ function createInitialPlayer(userId) {
   };
 }
 
-function getOrCreatePlayer(userId) {
-  const players = loadAllPlayers();
-  if (!players[userId]) {
-    players[userId] = createInitialPlayer(userId);
-    saveAllPlayers(players);
-  }
-  const p = players[userId];
-
+// プレイヤーデータの欠損補完＆マイグレーション（既存ロジック完全維持）
+function normalizePlayer(p, userId) {
+  p.userId = userId;
   // 黄金比基礎値の固定
   p.baseHp = 100;
   p.baseAtk = 24;
@@ -168,8 +177,90 @@ function getOrCreatePlayer(userId) {
 
   if (p.hp === undefined || p.hp <= 0) p.hp = p.baseHp;
 
+  return p;
+}
+
+// Supabaseの行データからプレイヤーオブジェクトを復元するヘルパー
+function rowToPlayer(row) {
+  const uid = row.line_user_id;
+  const raw = row.inventory;
+  let p;
+  // inventory(JSONB)にプレイヤー全体のオブジェクトが保存されている場合はそれを展開
+  if (raw && typeof raw === 'object' && ('slots' in raw || 'ch1Step' in raw || 'userId' in raw)) {
+    p = { ...raw };
+  } else {
+    p = createInitialPlayer(uid);
+    if (raw && typeof raw === 'object') {
+      p.inventory = { ...p.inventory, ...raw };
+    }
+  }
+  if (typeof row.hp === 'number') p.hp = row.hp;
+  if (row.current_stage) p.currentLocation = row.current_stage;
+  return normalizePlayer(p, uid);
+}
+
+// 全プレイヤーデータの読み込み（Supabase優先 ＋ ローカルフォールバック）
+async function loadAllPlayers() {
+  const localData = loadLocalPlayers();
+  if (!supabase) return localData;
+
+  try {
+    const { data, error } = await supabase.from('players').select('*');
+    if (error) {
+      console.error('Supabase 全件読み込みエラー:', error.message);
+      return localData;
+    }
+    const merged = { ...localData };
+    for (const row of data || []) {
+      if (!row.line_user_id) continue;
+      merged[row.line_user_id] = rowToPlayer(row);
+    }
+    saveLocalPlayers(merged);
+    return merged;
+  } catch (err) {
+    console.error('Supabase 通信例外(loadAllPlayers):', err);
+    return localData;
+  }
+}
+
+// 全プレイヤーデータの保存（Supabase Upsert ＋ ローカル保存）
+async function saveAllPlayers(allPlayers) {
+  saveLocalPlayers(allPlayers);
+  if (!supabase) return;
+
+  try {
+    const rows = Object.entries(allPlayers).map(([uid, p]) => ({
+      line_user_id: uid,
+      hp: p.hp ?? 100,
+      max_hp: p.baseHp ?? 100,
+      current_stage: p.currentLocation || 'アジト',
+      inventory: p, // JSONBカラムに全ステータス・スロット・進行度・所持品を丸ごと格納
+      updated_at: new Date().toISOString(),
+    }));
+
+    if (rows.length === 0) return;
+
+    const { error } = await supabase
+      .from('players')
+      .upsert(rows, { onConflict: 'line_user_id' });
+
+    if (error) {
+      console.error('Supabase 保存(Upsert)エラー:', error.message);
+    }
+  } catch (err) {
+    console.error('Supabase 通信例外(saveAllPlayers):', err);
+  }
+}
+
+// 単一プレイヤーの取得または新規作成（Supabase直結）
+async function getOrCreatePlayer(userId) {
+  const players = await loadAllPlayers();
+  if (!players[userId]) {
+    players[userId] = createInitialPlayer(userId);
+  }
+  const p = normalizePlayer(players[userId], userId);
   players[userId] = p;
-  saveAllPlayers(players);
+  await saveAllPlayers(players);
   return { player: p, allPlayers: players };
 }
 
@@ -825,9 +916,9 @@ ${battleData.hint}
 ====================`;
   }
 
-  const latestAll = loadAllPlayers();
+  const latestAll = await loadAllPlayers();
   latestAll[userId] = player;
-  saveAllPlayers(latestAll);
+  await saveAllPlayers(latestAll);
 
   try {
     await lineClient.pushMessage({
@@ -866,9 +957,9 @@ async function executeTwoStepRaid(userId, player, routeStr) {
     player.hp = 1;
     player.currentLocation = getRetreatLocation(step1Key);
 
-    const latestAll = loadAllPlayers();
+    const latestAll = await loadAllPlayers();
     latestAll[userId] = player;
-    saveAllPlayers(latestAll);
+    await saveAllPlayers(latestAll);
 
     const story1 = await generateRaidNarrative(loc1.name, battle1, player, enemy1, 'なし');
     const failMsg =
@@ -907,9 +998,9 @@ ${battle1.hint}
   player.currentLocation = step1Key;
 
   if (loc1.isStopper) {
-    const latestAll = loadAllPlayers();
+    const latestAll = await loadAllPlayers();
     latestAll[userId] = player;
-    saveAllPlayers(latestAll);
+    await saveAllPlayers(latestAll);
     const story1 = await generateRaidNarrative(loc1.name, battle1, player, enemy1, loot1Text);
     await lineClient.pushMessage({
       to: userId,
@@ -975,9 +1066,9 @@ ${battle1.hint}
 ${battle2.hint}`;
   }
 
-  const latestAll = loadAllPlayers();
+  const latestAll = await loadAllPlayers();
   latestAll[userId] = player;
-  saveAllPlayers(latestAll);
+  await saveAllPlayers(latestAll);
 
   const story1 = await generateRaidNarrative(loc1.name, battle1, player, enemy1, loot1Text);
   const story2 = await generateRaidNarrative(loc2.name, battle2, player, enemy2, loot2Text);
@@ -1027,12 +1118,12 @@ cron.schedule('0 8,12,20 * * *', async () => {
 });
 
 async function executeScheduledRaids(targetUserId = null, forceDefense = false) {
-  const players = loadAllPlayers();
+  const players = await loadAllPlayers();
   const userIds = targetUserId ? [targetUserId] : Object.keys(players);
 
   for (const userId of userIds) {
-    if (!players[userId]) continue;
-    const { player } = getOrCreatePlayer(userId);
+    if (!players[userId] && !targetUserId) continue;
+    const { player } = await getOrCreatePlayer(userId);
 
     if (
       player.reservedLocation === 'ヴァルハイト城' ||
@@ -1096,9 +1187,9 @@ ${defEnemy.tauntLog}
 \n${battleData.hint}`;
       }
 
-      const latestAll = loadAllPlayers();
+      const latestAll = await loadAllPlayers();
       latestAll[userId] = player;
-      saveAllPlayers(latestAll);
+      await saveAllPlayers(latestAll);
 
       const story = await generateRaidNarrative(`${baseName}（防衛戦）`, battleData, player, defEnemy, lootText);
       const messageText =
@@ -1416,9 +1507,9 @@ ${story}${summaryText}
 \n${battleData.hint}`;
     }
 
-    const latestAll = loadAllPlayers();
+    const latestAll = await loadAllPlayers();
     latestAll[userId] = player;
-    saveAllPlayers(latestAll);
+    await saveAllPlayers(latestAll);
 
     const story = await generateRaidNarrative(locData.name, battleData, player, enemy, lootText);
 
@@ -1470,7 +1561,7 @@ app.post('/webhook', middleware(lineConfig), async (req, res) => {
 
     const userText = event.message.text.trim();
     const userId = event.source.userId;
-    let { player, allPlayers } = getOrCreatePlayer(userId);
+    let { player, allPlayers } = await getOrCreatePlayer(userId);
 
     // A. 開幕・リセット・作戦地図・行動選択（★画像主役・長文テキスト全廃版）
     if (
@@ -1485,7 +1576,7 @@ app.post('/webhook', middleware(lineConfig), async (req, res) => {
       if (userText === '開幕' || userText === 'リセット') {
         player = createInitialPlayer(userId);
         allPlayers[userId] = player;
-        saveAllPlayers(allPlayers);
+        await saveAllPlayers(allPlayers);
       }
 
       // ★長文の進路案内やコンディションを全廃し、画面を占有しない極小テキストに限定！
@@ -1520,7 +1611,7 @@ app.post('/webhook', middleware(lineConfig), async (req, res) => {
     } else if (userText === '予約解除') {
       player.reservedLocation = null;
       allPlayers[userId] = player;
-      saveAllPlayers(allPlayers);
+      await saveAllPlayers(allPlayers);
 
       await lineClient.replyMessage({
         replyToken: event.replyToken,
@@ -1561,7 +1652,7 @@ app.post('/webhook', middleware(lineConfig), async (req, res) => {
         player.reservedLocation = null;
         player.currentLocation = '跳ね橋';
         allPlayers[userId] = player;
-        saveAllPlayers(allPlayers);
+        await saveAllPlayers(allPlayers);
 
         await lineClient.replyMessage({
           replyToken: event.replyToken,
@@ -1585,7 +1676,7 @@ app.post('/webhook', middleware(lineConfig), async (req, res) => {
 
       player.reservedLocation = '城郭：突撃';
       allPlayers[userId] = player;
-      saveAllPlayers(allPlayers);
+      await saveAllPlayers(allPlayers);
 
       const nextFloorNum = player.castleFloor + 1;
       const floorInfo = MAP_LOCATIONS['ヴァルハイト城'].castleFloors[nextFloorNum];
@@ -1639,7 +1730,7 @@ app.post('/webhook', middleware(lineConfig), async (req, res) => {
 
       player.reservedLocation = route;
       allPlayers[userId] = player;
-      saveAllPlayers(allPlayers);
+      await saveAllPlayers(allPlayers);
 
       const loseSlotWarn = player.awakenedBoss
         ? `\n⚠️【注意】現在『${MAP_LOCATIONS[player.awakenedBoss]?.name || player.awakenedBoss}』に対して第6スロットが覚醒中だ！別の場所へ移動すると第6スロットは消滅するぞ！`
@@ -1682,7 +1773,7 @@ app.post('/webhook', middleware(lineConfig), async (req, res) => {
         }
         player.reservedLocation = '帰還';
         allPlayers[userId] = player;
-        saveAllPlayers(allPlayers);
+        await saveAllPlayers(allPlayers);
 
         const loseSlotWarn = player.awakenedBoss
           ? `\n⚠️【注意】本陣へ帰還すると、現在覚醒中の『第6スロット』は消滅するぞ！`
@@ -1750,7 +1841,7 @@ app.post('/webhook', middleware(lineConfig), async (req, res) => {
           player.inventory['装甲板'] -= cost;
           player.baseWallLevel = lv + 1;
           allPlayers[userId] = player;
-          saveAllPlayers(allPlayers);
+          await saveAllPlayers(allPlayers);
 
           const newBreakRate = (getBossBreakRate(player) * 100).toFixed(0);
           await lineClient.replyMessage({
@@ -1796,7 +1887,7 @@ app.post('/webhook', middleware(lineConfig), async (req, res) => {
           player.inventory['王国鋼'] -= cost;
           player.baseArmoryLevel = lv + 1;
           allPlayers[userId] = player;
-          saveAllPlayers(allPlayers);
+          await saveAllPlayers(allPlayers);
 
           await lineClient.replyMessage({
             replyToken: event.replyToken,
@@ -1841,7 +1932,7 @@ app.post('/webhook', middleware(lineConfig), async (req, res) => {
           player.inventory['黒火薬'] -= cost;
           player.baseFurnaceLevel = lv + 1;
           allPlayers[userId] = player;
-          saveAllPlayers(allPlayers);
+          await saveAllPlayers(allPlayers);
 
           const newAwakenRate = (getOverloadAwakenRate(player) * 100).toFixed(0);
           await lineClient.replyMessage({
@@ -1979,7 +2070,7 @@ app.post('/webhook', middleware(lineConfig), async (req, res) => {
 
       player.reservedLocation = matchedKey;
       allPlayers[userId] = player;
-      saveAllPlayers(allPlayers);
+      await saveAllPlayers(allPlayers);
 
       let breakRiskNote = '';
       if (loc.isCastleRogue) {
@@ -2099,7 +2190,7 @@ HP: ${player.hp}/${stats.maxHp} | 攻撃: ${stats.atk} | 防御: ${stats.def}
         const stats = calculateEffectiveStats(player);
         if (player.hp > stats.maxHp) player.hp = stats.maxHp;
         allPlayers[userId] = player;
-        saveAllPlayers(allPlayers);
+        await saveAllPlayers(allPlayers);
 
         await lineClient.replyMessage({
           replyToken: event.replyToken,
@@ -2151,7 +2242,7 @@ HP: ${player.hp}/${stats.maxHp} | 攻撃: ${stats.atk} | 防御: ${stats.def} | 
       if (player.hp > newStats.maxHp) player.hp = newStats.maxHp;
 
       allPlayers[userId] = player;
-      saveAllPlayers(allPlayers);
+      await saveAllPlayers(allPlayers);
 
       await lineClient.replyMessage({
         replyToken: event.replyToken,
@@ -2181,7 +2272,7 @@ HP: ${player.hp}/${newStats.maxHp} | 攻撃: ${newStats.atk} | 防御: ${newStat
         player.inventory['魔導石'] = (player.inventory['魔導石'] || 0) + (s.stone || 0);
         player.slots = { steel: 0, plate: 0, powder: 0, stone: 0 };
         allPlayers[userId] = player;
-        saveAllPlayers(allPlayers);
+        await saveAllPlayers(allPlayers);
 
         const stats = calculateEffectiveStats(player);
         await lineClient.replyMessage({
@@ -2238,7 +2329,7 @@ HP: ${player.hp}/${newStats.maxHp} | 攻撃: ${newStats.atk} | 防御: ${newStat
       if (player.hp > newStats.maxHp) player.hp = newStats.maxHp;
 
       allPlayers[userId] = player;
-      saveAllPlayers(allPlayers);
+      await saveAllPlayers(allPlayers);
 
       const newTotal = getTotalSlots(player.slots);
       const sixthNote = player.awakenedBoss
@@ -2306,7 +2397,7 @@ ${newTotal < 5 ? '▼ 続けて残りの枠を込めろ。' : '✅ 5枠すべて
       player.inventory['兵糧'] -= 1;
       player.hp = stats.maxHp;
       allPlayers[userId] = player;
-      saveAllPlayers(allPlayers);
+      await saveAllPlayers(allPlayers);
 
       const notice = player.reservedLocation ? `\n（※次回予約：『${getReservedDisplayName(player.reservedLocation)}』）` : '';
       await lineClient.replyMessage({
@@ -2393,7 +2484,7 @@ ${player.weapon} [${total}/5枠]
       player.inventory['魔導石'] = maxMat;
       player.inventory['兵糧'] = maxRat;
       allPlayers[userId] = player;
-      saveAllPlayers(allPlayers);
+      await saveAllPlayers(allPlayers);
 
       await lineClient.replyMessage({
         replyToken: event.replyToken,
