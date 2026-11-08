@@ -474,6 +474,11 @@ ${localAdvice}`;
 // 5. 地続きノードマップ＆スマート行動選択ボタン生成（★行先選択のみに純化）
 // ==========================================
 function getSmartButtons(player) {
+  // ★すでに行動選択（予約）済みの場合はピコんボタンを出さない（変更時はリッチメニュー「行動変更」から）
+  if (player.reservedLocation) {
+    return [];
+  }
+
   // ヴァルハイト城潜入中は「次階層へ突撃」か「城外へ脱出」の行先のみ
   if (player.currentLocation === 'ヴァルハイト城' && player.castleFloor > 0) {
     const nextFloorLabel = player.castleFloor === 1
@@ -1597,8 +1602,7 @@ app.post('/webhook', middleware(lineConfig), async (req, res) => {
 ・現在の戦利品袋: 【 ${formatLootList(player.castleLoot)} 】
 ・引き継ぎ部隊HP: ${player.hp}/${calculateEffectiveStats(player).maxHp}
 
-※リッチメニューの「⚡ 即時決行」を押せば、今すぐ次階層へ突入します！`,
-          quickReply: makeQuickReply(getSmartButtons(player)),
+※リッチメニューの「⚡ 即時決行」で今すぐ突入、変更する場合は「🔄 行動変更」を押せ！`,
         }],
       });
 
@@ -1652,8 +1656,7 @@ app.post('/webhook', middleware(lineConfig), async (req, res) => {
 ・野営補給: 傷ついた場合、手持ちの『🍞兵糧』を自動で1袋食べてHP100%全快！（所持: ${player.inventory['兵糧']}袋）
 ・第2戦: そのまま『${loc2.name}』へ突入して連続略奪！${loseSlotWarn}
 
-※リッチメニューの「⚡ 即時決行」を押せば、今すぐ2連続略奪のリザルトが届きます！`,
-          quickReply: makeQuickReply(getSmartButtons(player)),
+※リッチメニューの「⚡ 即時決行」で今すぐ決行、変更する場合は「🔄 行動変更」を押せ！`,
         }],
       });
 
@@ -1692,8 +1695,9 @@ app.post('/webhook', middleware(lineConfig), async (req, res) => {
             text:
 `⛺【アジト帰還（強襲凱旋）予約完了】
 次回定時、退路の人間軍哨戒部隊を蹴散らして物資を奪いながら『${getBaseName(player)}』へ帰還する！
-・帰還ボーナス: 到着と同時に部隊HPが100%全快（兵糧消費ゼロ）＆アジト強化が解禁！${loseSlotWarn}`,
-            quickReply: makeQuickReply(getSmartButtons(player)),
+・帰還ボーナス: 到着と同時に部隊HPが100%全快（兵糧消費ゼロ）＆アジト強化が解禁！${loseSlotWarn}
+
+※リッチメニューの「⚡ 即時決行」で今すぐ帰還、変更する場合は「🔄 行動変更」を押せ！`,
           }],
         });
         return;
@@ -2003,14 +2007,13 @@ app.post('/webhook', middleware(lineConfig), async (req, res) => {
 ・現在地: ${getCurrentLocationName(player)}
 ・内容: ${loc.desc}${breakRiskNote}
 
-※リッチメニューの「⚡ 即時決行」を押せば、定時を待たずに今すぐ突撃できます。`,
-          quickReply: makeQuickReply(getSmartButtons(player)),
+※リッチメニューの「⚡ 即時決行」で今すぐ突撃、変更する場合は「🔄 行動変更」を押せ！`,
         }],
       });
 
     // E. テスト即時決行 ＆ テスト防衛戦（リッチメニュー「⚡ 即時決行」連動）
-    } else if (userText === 'テスト即時決行' || userText === 'テスト防衛戦') {
-      const isDef = userText === 'テスト防衛戦';
+    } else if (userText.includes('即時決行') || userText.includes('テスト防衛戦')) {
+      const isDef = userText.includes('テスト防衛戦');
       await lineClient.replyMessage({
         replyToken: event.replyToken,
         messages: [{
