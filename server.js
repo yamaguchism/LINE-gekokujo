@@ -11,6 +11,7 @@ import {
   getTotalSlots,
   getBaseName,
   getBossBreakRate,
+  getOverloadAwakenRate,
   tryBreakSlotMaterial,
   calculateEffectiveStats,
   simulateBattle,
@@ -78,13 +79,17 @@ function createInitialPlayer(userId) {
       powder: 1,  // 黒火薬: 会心+13%, 回避+7%, 攻-2, 防-1
       stone: 0,   // 魔導石: 攻+3, 防-1, HP-6%, 吸収+20%
     },
+    // ★ 復讐の独立第6スロット状態
+    awakenedBoss: null, // 現在第6スロットが覚醒している対象ボスKey（nullなら未覚醒）
+    sixthSlot: null,    // 独立第6枠に装填中の素材Key ('steel' | 'plate' | 'powder' | 'stone' | null)
     chapter: 1,
     ch1Step: 0, // 0:検問所(ガルシア), 1:前哨砦(バルツ), 2:要塞門(ロシュ), 3:要塞門乗っ取り完了
     ch2Step: 0, // 0:工房跡(従軍錬金術師), 1:大聖堂(聖堂重騎士), 2:聖涙川の教会平原完全制圧
     ch3Step: 0, // 0:回廊関門(アルバート), 1:遠征軍総本陣(ジークフリート), 2:覇権の万魔中央回廊完全制圧
     currentLocation: 'アジト', // 'アジト' または 各エリアキー
-    baseWallLevel: 1,   // 防壁Lv (Lv1:破損30%, Lv2:20%, Lv3:10%)
-    baseArmoryLevel: 1, // 武器庫Lv (Lv1:上限5個, Lv2:10個, Lv3:15個)
+    baseWallLevel: 1,    // 防壁Lv (Lv1:破損30%, Lv2:20%, Lv3:10%)
+    baseArmoryLevel: 1,  // 武器庫Lv (Lv1:上限5個, Lv2:10個, Lv3:15個)
+    baseFurnaceLevel: 0, // 過負荷炉Lv (Lv0:6枠覚醒15%, Lv1:25%, Lv2:35%)
     bossWins: {
       '検問所': 0,
       '前哨砦': 0,
@@ -135,6 +140,9 @@ function getOrCreatePlayer(userId) {
   if (!p.currentLocation) p.currentLocation = 'アジト';
   if (!p.baseWallLevel) p.baseWallLevel = 1;
   if (!p.baseArmoryLevel) p.baseArmoryLevel = 1;
+  if (p.baseFurnaceLevel === undefined) p.baseFurnaceLevel = 0;
+  if (p.awakenedBoss === undefined) p.awakenedBoss = null;
+  if (p.sixthSlot === undefined) p.sixthSlot = null;
   if (!p.bossWins) p.bossWins = {};
   if (p.castleFloor === undefined) p.castleFloor = 0;
   if (!Array.isArray(p.castleLoot)) p.castleLoot = [];
@@ -163,6 +171,31 @@ function getOrCreatePlayer(userId) {
   players[userId] = p;
   saveAllPlayers(players);
   return { player: p, allPlayers: players };
+}
+
+// 第6枠の素材キーと表示名の変換ヘルパー
+function getSlotItemInfo(slotKey) {
+  const map = {
+    steel: { item: '王国鋼', label: '⛏️王国鋼(攻+7/防-2)' },
+    plate: { item: '装甲板', label: '🛡️装甲板(防+6/攻-2)' },
+    powder: { item: '黒火薬', label: '🧨黒火薬(会心+13%/回避+7%)' },
+    stone: { item: '魔導石', label: '🔮魔導石(攻+3/吸血+20%/HP-6%)' },
+  };
+  return map[slotKey] || null;
+}
+
+// 場所移動時などに覚醒中の第6スロットを消滅させるヘルパー
+function clearAwakenedSixthSlot(player, returnUnusedMaterial = true) {
+  if (!player.awakenedBoss && !player.sixthSlot) return false;
+  if (returnUnusedMaterial && player.sixthSlot) {
+    const info = getSlotItemInfo(player.sixthSlot);
+    if (info) {
+      player.inventory[info.item] = (player.inventory[info.item] || 0) + 1;
+    }
+  }
+  player.awakenedBoss = null;
+  player.sixthSlot = null;
+  return true;
 }
 
 function getCurrentLocationName(player) {
@@ -438,23 +471,10 @@ ${localAdvice}`;
 }
 
 // ==========================================
-// 5. 地続きノードマップ＆スマート行動選択ボタン生成
+// 5. 地続きノードマップ＆スマート行動選択ボタン生成（★行先選択のみに純化）
 // ==========================================
 function getSmartButtons(player) {
-  if (player.reservedLocation) {
-    const reservedButtons = [
-      { label: '⚡ 時間を進める（テスト決行）', text: 'テスト即時決行' },
-      { label: '🔄 行動を変更する', text: '予約解除' },
-      { label: '🗺️ 作戦地図を見る', text: '作戦地図' },
-    ];
-    if (player.currentLocation === 'ヴァルハイト城' && player.castleFloor > 0) {
-      reservedButtons.push({ label: '⛺ 戦利品を持って脱出', text: '城郭：脱出' });
-    } else if (player.currentLocation === 'アジト') {
-      reservedButtons.push({ label: '🏰 アジト強化', text: 'アジト強化' });
-    }
-    return reservedButtons;
-  }
-
+  // ヴァルハイト城潜入中は「次階層へ突撃」か「城外へ脱出」の行先のみ
   if (player.currentLocation === 'ヴァルハイト城' && player.castleFloor > 0) {
     const nextFloorLabel = player.castleFloor === 1
       ? '🏰 内城・第2層へ突撃(HP引継)'
@@ -462,8 +482,6 @@ function getSmartButtons(player) {
     return [
       { label: nextFloorLabel, text: '城郭：突撃' },
       { label: '⛺ 戦利品を持って城外へ脱出', text: '城郭：脱出' },
-      { label: '🔨 鍛造(スロット調整)', text: '鍛造' },
-      { label: '🗺️ 作戦地図を見る', text: '作戦地図' },
     ];
   }
 
@@ -471,13 +489,8 @@ function getSmartButtons(player) {
   const isCh3 = player.chapter >= 3 || player.ch2Step >= 2;
   const isCh2 = !isCh3 && (player.chapter >= 2 || player.ch1Step >= 3);
   const cur = player.currentLocation || 'アジト';
-  const stats = calculateEffectiveStats(player);
 
-  if (player.hp < stats.maxHp && (player.inventory['兵糧'] || 0) > 0) {
-    buttons.push({ label: `🍖 兵糧でHP全快(残${player.inventory['兵糧']}袋)`, text: '回復' });
-  }
-
-  // 地勢ごとの完全独立ルーティング
+  // 地勢ごとの完全独立ルーティング（回復・鍛造・地図等のリッチメニュー重複ボタンは全廃し、行先のみ表示）
   if (isCh3) {
     // ==========================================
     // 【覇権の万魔中央回廊】
@@ -520,7 +533,6 @@ function getSmartButtons(player) {
 
     } else if (cur === '跳ね橋') {
       buttons.push({ label: '🏯 城門突破！ヴァルハイト城へ', text: '出撃：ヴァルハイト城' });
-      buttons.push({ label: '⛺ 本陣へ帰還', text: '出撃：帰還' });
 
     } else {
       buttons.push({ label: '🍷 交易区へ進軍', text: '出撃：中立交易区' });
@@ -602,9 +614,7 @@ function getSmartButtons(player) {
     }
   }
 
-  buttons.push({ label: '🗺️ 作戦地図を見る', text: '作戦地図' });
-  buttons.push({ label: '🔨 鍛造(スロット調整)', text: '鍛造' });
-
+  // 前線にいる時は「アジトへ帰還」を行先として追加、アジト滞在中は「アジト強化」を表示
   if (cur !== 'アジト') {
     buttons.push({ label: '⛺ アジトへ帰還(略奪&全快)', text: '出撃：帰還' });
   } else {
@@ -614,7 +624,7 @@ function getSmartButtons(player) {
   return buttons;
 }
 
-// 鍛冶場用のスロット操作ボタン
+// 鍛冶場用のスロット操作ボタン（基本5枠 ＋ 覚醒中は独立第6枠の自由付け替え・解除）
 function getForgeButtons(player) {
   const s = player.slots;
   const total = getTotalSlots(s);
@@ -635,21 +645,37 @@ function getForgeButtons(player) {
     }
   }
   if (total > 0) {
-    buttons.push({ label: '🔄 全スロット外す(初期化)', text: 'スロット：リセット' });
+    buttons.push({ label: '🔄 5枠すべて外す(初期化)', text: 'スロット：リセット' });
   }
-  if (player.reservedLocation) {
-    buttons.push({ label: '⚡ テスト決行', text: 'テスト即時決行' });
-  } else {
-    buttons.push({ label: '🗺️ 作戦地図へ戻る', text: '作戦地図' });
+
+  // ★ 第6スロット覚醒中：独立した6枠目の装着・付け替え・解除ボタン
+  if (player.awakenedBoss) {
+    if ((player.inventory['王国鋼'] || 0) > 0 && player.sixthSlot !== 'steel') {
+      buttons.push({ label: `🔥 6枠目：鋼(残${player.inventory['王国鋼']})`, text: '6枠：鋼' });
+    }
+    if ((player.inventory['装甲板'] || 0) > 0 && player.sixthSlot !== 'plate') {
+      buttons.push({ label: `🔥 6枠目：板(残${player.inventory['装甲板']})`, text: '6枠：板' });
+    }
+    if ((player.inventory['黒火薬'] || 0) > 0 && player.sixthSlot !== 'powder') {
+      buttons.push({ label: `🔥 6枠目：火(残${player.inventory['黒火薬']})`, text: '6枠：火' });
+    }
+    if ((player.inventory['魔導石'] || 0) > 0 && player.sixthSlot !== 'stone') {
+      buttons.push({ label: `🔥 6枠目：石(残${player.inventory['魔導石']})`, text: '6枠：石' });
+    }
+    if (player.sixthSlot) {
+      buttons.push({ label: '❌ 6枠目を外す(5枠扱いに戻す)', text: '6枠：外す' });
+    }
   }
+
   return buttons;
 }
 
-// アジト強化ボタン
+// アジト強化ボタン（防壁・武器庫・過負荷炉）
 function getBaseUpgradeButtons(player) {
   const buttons = [];
   const wallLv = player.baseWallLevel || 1;
   const armoryLv = player.baseArmoryLevel || 1;
+  const furnaceLv = player.baseFurnaceLevel || 0;
 
   if (wallLv < 3) {
     const cost = wallLv === 1 ? 3 : 5;
@@ -665,12 +691,14 @@ function getBaseUpgradeButtons(player) {
       text: '拠点改修：武器庫',
     });
   }
-
-  if (player.reservedLocation) {
-    buttons.push({ label: '⚡ テスト決行', text: 'テスト即時決行' });
-  } else {
-    buttons.push({ label: '🗺️ 出撃先を選ぶ', text: '作戦地図' });
+  if (furnaceLv < 2) {
+    const cost = furnaceLv === 0 ? 3 : 5;
+    buttons.push({
+      label: `🔥 過負荷炉Lv${furnaceLv + 1}へ(火${cost}個)`,
+      text: '拠点改修：過負荷炉',
+    });
   }
+
   return buttons;
 }
 
@@ -678,6 +706,9 @@ function getBaseUpgradeButtons(player) {
 // 6. 特殊作戦①：ヴァルハイト城（3連撃チキンレースローグ）処理
 // ==========================================
 async function executeCastleRogueStep(userId, player) {
+  // 別エリア移動扱いとして覚醒中の第6スロットがあれば消滅
+  clearAwakenedSixthSlot(player, true);
+
   const castleData = MAP_LOCATIONS['ヴァルハイト城'];
   const nextFloorNum = (player.castleFloor || 0) + 1;
   const floorInfo = castleData.castleFloors[nextFloorNum] || castleData.castleFloors[1];
@@ -784,7 +815,7 @@ ${quoteHeader}${story}
 
 ・現在地: ${getCurrentLocationName(player)}（1歩後退で踏みとどまった！）
 ・部隊残HP: 1/${battleData.stats.maxHp}（要回復！）
-🔥 兵糧があれば下の「🍖 兵糧でHP全快」で傷を癒やし、すぐ目の前のヴァルハイト城へ再突撃できるぞ！
+🔥 リッチメニューの「🍖 兵糧回復」で傷を癒やし、すぐ目の前のヴァルハイト城へ再突撃できるぞ！
 ${battleData.hint}
 ====================`;
   }
@@ -811,6 +842,9 @@ ${battleData.hint}
 // 7. 特殊作戦②：夜間2地点連続略奪
 // ==========================================
 async function executeTwoStepRaid(userId, player, routeStr) {
+  // 別エリア移動扱いとして覚醒中の第6スロットがあれば消滅
+  clearAwakenedSixthSlot(player, true);
+
   const [step1Key, step2Key] = routeStr.split('>');
   const loc1 = MAP_LOCATIONS[step1Key];
   const loc2 = MAP_LOCATIONS[step2Key];
@@ -1066,7 +1100,7 @@ ${defEnemy.tauntLog}
 `🚨【緊急迎撃報告：${baseName}防衛戦】
 ${story}${summaryText}
 
-▼ 現在アジトに滞在中だ。下部メニューから「アジト強化」を行うか、次回の出撃先を選べ。`;
+▼ 現在アジトに滞在中だ。次回の出撃先またはアジト強化を選べ。`;
 
       try {
         await lineClient.pushMessage({
@@ -1083,8 +1117,24 @@ ${story}${summaryText}
       continue;
     }
 
+    // ★ 場所移動による第6スロット消滅判定（覚醒対象ボス以外の場所へ移動した場合）
+    let movedAwaySlotLostNotice = '';
+    if (player.awakenedBoss && locKey !== player.awakenedBoss) {
+      clearAwakenedSixthSlot(player, true);
+      movedAwaySlotLostNotice = `\n（※場所を移動したため、覚醒していた『第6スロット』は消滅した）`;
+    }
+
+    // ★ 今回のボス戦で使用した第6枠の素材を記録（戦闘後に使い捨て消滅＆戦利品判定用）
+    const usedSixthSlotKey = (player.awakenedBoss === locKey) ? player.sixthSlot : null;
+    const usedSixthInfo = usedSixthSlotKey ? getSlotItemInfo(usedSixthSlotKey) : null;
+
     const enemy = locData.enemies[Math.floor(Math.random() * locData.enemies.length)];
     const battleData = simulateBattle(player, enemy, locKey);
+
+    // ★ 第6枠に入れていた素材は勝っても負けても使い捨てで消滅！
+    if (usedSixthSlotKey) {
+      player.sixthSlot = null;
+    }
 
     player.hp = battleData.finalPlayerHp;
     player.reservedLocation = null;
@@ -1094,30 +1144,24 @@ ${story}${summaryText}
 
     if (battleData.result === 'WIN') {
       let capNotice = '';
+      let sixthWinNotice = '';
 
-      if (locData.isChallenge) {
-        player.bossWins[locKey] = (player.bossWins[locKey] || 0) + 1;
-        player.currentLocation = '礼拝堂';
+      // ★ ボスに勝利したら第6枠は消滅
+      if (locData.isBoss) {
+        player.awakenedBoss = null;
+        player.sixthSlot = null;
+      }
 
+      // ★ 6枠目に素材を付けて勝った場合は戦利品無し！付けなければ5枠勝利扱いで全戦利品獲得！
+      if (locData.isBoss && usedSixthInfo) {
+        lootText = `なし（🔥6枠目『${usedSixthInfo.item}』使用のため戦利品なし）`;
+        sixthWinNotice = `\n🔥【6枠覚醒突破】6枠目に装填した『${usedSixthInfo.item}』は使い捨てで消滅し、6枠使用の代償として戦利品は無しとなった！（第6スロットは消滅し通常の5枠へ戻った）`;
+      } else if (locData.isChallenge) {
         const rSteel = addLootWithCap(player, '王国鋼', 1);
         const rPlate = addLootWithCap(player, '装甲板', 1);
         const rPowder = addLootWithCap(player, '黒火薬', 1);
         const rStone = addLootWithCap(player, '魔導石', 1);
         lootText = `⛏️鋼×${rSteel.added} / 🛡️板×${rPlate.added} / 🧨火×${rPowder.added} / 🔮石×${rStone.added}`;
-
-        summaryText =
-`\n\n====================
-💀【チャレンジ完全制覇：対魔神聖巨像を粉砕！！】
-人間教会が地下最深部に秘匿していた『対魔神聖巨像アークエンゼル』を解体・スクラップにし、組み込まれていた最高級の全資材をごっそり強奪した！
-
-📡【魔王城・緊急傍受】エリート魔道派の魔軍卿：
-『な……何だと！？ 教会が我が魔王軍を殲滅すべく極秘建造していた神聖決戦巨像を、あのような野良のチンピラどもが単独でスクラップにしただと！？ 計算が合わん……あり得ん！！』
-
-・強奪戦利品: ${lootText}
-・現在地: ${getCurrentLocationName(player)}
-・部隊残HP: ${player.hp}/${battleData.stats.maxHp}
-====================`;
-
       } else if (locData.possibleLoot && locData.possibleLoot.length > 0) {
         const dropObj = locData.possibleLoot[Math.floor(Math.random() * locData.possibleLoot.length)];
         const addRes = addLootWithCap(player, dropObj.item, dropObj.count);
@@ -1129,7 +1173,24 @@ ${story}${summaryText}
         }
       }
 
-      if (locData.isReturn) {
+      if (locData.isChallenge) {
+        player.bossWins[locKey] = (player.bossWins[locKey] || 0) + 1;
+        player.currentLocation = '礼拝堂';
+
+        summaryText =
+`\n\n====================
+💀【チャレンジ完全制覇：対魔神聖巨像を粉砕！！】
+人間教会が地下最深部に秘匿していた『対魔神聖巨像アークエンゼル』を解体・スクラップにし、組み込まれていた最高級の全資材をごっそり強奪した！
+
+📡【魔王城・緊急傍受】エリート魔道派の魔軍卿：
+『な……何だと！？ 教会が我が魔王軍を殲滅すべく極秘建造していた神聖決戦巨像を、あのような野良のチンピラどもが単独でスクラップにしただと！？ 計算が合わん……あり得ん！！』
+
+・強奪戦利品: ${lootText}${sixthWinNotice}
+・現在地: ${getCurrentLocationName(player)}
+・部隊残HP: ${player.hp}/${battleData.stats.maxHp}
+====================`;
+
+      } else if (locData.isReturn) {
         player.currentLocation = 'アジト';
         player.hp = battleData.stats.maxHp;
 
@@ -1137,12 +1198,12 @@ ${story}${summaryText}
 `\n\n====================
 ⛺【アジト凱旋完了＆部隊HP 100%全快！】
 追撃兵を蹴散らして戦利品（${lootText}）を強奪し、${getBaseName(player)}へ帰還した！
-本陣の肉を貪り喰らい、兵糧消費ゼロで部隊の傷が完全に癒えたぞ！${capNotice}
+本陣の肉を貪り喰らい、兵糧消費ゼロで部隊の傷が完全に癒えたぞ！${capNotice}${movedAwaySlotLostNotice}
 
 ・強奪品: ${lootText}
 ・部隊HP: ${player.hp}/${battleData.stats.maxHp}（完全回復！）
 ・現在地: ${getCurrentLocationName(player)}
-★ 現在アジト滞在中！「アジト強化」で防壁や武器庫を改築できるぞ！
+★ 現在アジト滞在中！「🏰 アジト強化」で防壁・武器庫・過負荷炉を改築できるぞ！
 ====================`;
 
       } else if (locData.isDrawbridge) {
@@ -1156,7 +1217,7 @@ ${story}${summaryText}
 🔥 魔軍卿 ガルガン：
 『ガハハハ！！ 橋は落ちたぞ！ ここから先は引き返せねえ天守への3連殴り込みだ！ 武器とHPを整えて突っ込めシンジ班！！』
 
-・強奪品: ${lootText}${capNotice}
+・強奪品: ${lootText}${capNotice}${movedAwaySlotLostNotice}
 ・現在地: ${getCurrentLocationName(player)}
 ・部隊残HP: ${player.hp}/${battleData.stats.maxHp}
 ★ 下の『🏯 城門突破！ヴァルハイト城へ』で3連撃チキンレースへ挑めるぞ！
@@ -1178,7 +1239,7 @@ ${story}${summaryText}
 新兵ガルシアを叩き潰し、黒鉄の峡谷地帯の防衛線をこじ開けた！
 📡【魔王城・通信傍受】正規軍閥派の連絡官：『なにっ、ガルガン軍の野良犬どもが検問所を抜いただと！？まぐれだ、次のバルツの重装甲で叩き潰されるわ！』
 
-・強奪品: ${lootText}${capNotice}
+・強奪品: ${lootText}${capNotice}${sixthWinNotice}
 ・現在地: ${getCurrentLocationName(player)}
 ・部隊残HP: ${player.hp}/${battleData.stats.maxHp}
 ====================`;
@@ -1191,7 +1252,7 @@ ${story}${summaryText}
 魔導重装兵バルツの鉄壁の甲冑を打ち砕いた！
 📡【魔王城・通信傍受】貴族魔族派の魔軍卿：『下等な野蛮人どもがバルツを抜いたか……だが要塞門には名将ロシュがいる。あやつらなど剛剣の錆となるわ！』
 
-・強奪品: ${lootText}${capNotice}
+・強奪品: ${lootText}${capNotice}${sixthWinNotice}
 ・現在地: ${getCurrentLocationName(player)}
 ・部隊残HP: ${player.hp}/${battleData.stats.maxHp}
 ====================`;
@@ -1213,7 +1274,7 @@ ${story}${summaryText}
 🔥 魔軍卿 ガルガン：
 『ガハハハ！！ 見たかシンジ班！ エリートどもの蒼ざめたツラが最高の酒の肴だぜ！ この勢いで教会平原の魔導石も城も全部ぶんどるぞ！！』
 
-・強奪品: ${lootText}${capNotice}
+・強奪品: ${lootText}${capNotice}${sixthWinNotice}
 ・現在地: ${getCurrentLocationName(player)}（HP全快！）
 ====================`;
 
@@ -1228,7 +1289,7 @@ ${story}${summaryText}
 📡【魔王城・通信傍受】エリート魔道派の魔軍卿：
 『毒ガスによる損耗計算を無視して突破しただと……？ 理屈に合わん、あの野良魔族どもは一体何を武器に組み込んでいるのだ……！』
 
-・強奪品: ${lootText}${capNotice}
+・強奪品: ${lootText}${capNotice}${sixthWinNotice}
 ・現在地: ${getCurrentLocationName(player)}
 ・部隊残HP: ${player.hp}/${battleData.stats.maxHp}
 ====================`;
@@ -1251,7 +1312,7 @@ ${story}${summaryText}
 🔥 魔軍卿 ガルガン：
 『ガハハハ！！ シンジ班、よくやった！ エリートどもが悔し涙を流しながら歯ぎしりしてやがるぜ！ 次は万魔中央回廊の人間遠征軍へ雪崩れ込むぞ！！』
 
-・強奪品: ${lootText}${capNotice}
+・強奪品: ${lootText}${capNotice}${sixthWinNotice}
 ・現在地: ${getCurrentLocationName(player)}（HP全快！）
 ====================`;
 
@@ -1266,7 +1327,7 @@ ${story}${summaryText}
 📡【魔王城・前線司令部傍受】正規軍閥派の魔軍卿：
 『ば、馬鹿な……！ 我が正規軍の重装師団が何ヶ月も抜くことができなかったアルバートの白獅子陣を、ガルガンの野良小隊が単独でぶち抜いただと！？』
 
-・強奪品: ${lootText}${capNotice}
+・強奪品: ${lootText}${capNotice}${sixthWinNotice}
 ・現在地: ${getCurrentLocationName(player)}
 ・部隊残HP: ${player.hp}/${battleData.stats.maxHp}
 ====================`;
@@ -1287,7 +1348,7 @@ ${story}${summaryText}
 🔥 魔軍卿 ガルガン：
 『ガハハハハ！！ 聞いたか野郎ども！！ 魔王様の御前でエリート魔軍卿どもが真っ青になって震えてやがるぜ！ 俺たちの下剋上、ここに極まれりだァァ！！』
 
-・強奪品: ${lootText}${capNotice}
+・強奪品: ${lootText}${capNotice}${sixthWinNotice}
 ・現在地: ${getCurrentLocationName(player)}（HP全快！）
 ====================`;
         }
@@ -1296,7 +1357,7 @@ ${story}${summaryText}
         summaryText =
 `\n\n【略奪戦果】
 ・作戦地: ${locData.name}
-・強奪品: ${lootText}${capNotice}
+・強奪品: ${lootText}${capNotice}${movedAwaySlotLostNotice}
 ・現在地: ${getCurrentLocationName(player)}
 ・部隊残HP: ${player.hp}/${battleData.stats.maxHp}
 （※前線に駐留中。隣接エリアへ進軍するか、『⛺ アジトへ帰還』で本陣に戻ってタダ飯全快＆アジト強化を行え）`;
@@ -1307,23 +1368,46 @@ ${story}${summaryText}
       player.currentLocation = retreatLoc;
 
       let breakNotice = '';
+      let sixthAwakenNotice = '';
+
       if (locData.isBoss) {
         const brokenItemName = tryBreakSlotMaterial(player);
         if (brokenItemName) {
-          breakNotice = `\n💥【武具破損！】敵の猛撃を受けて後退する際、キメラ武器に溶接していた『${brokenItemName}』が1個砕け散ってしまった…！（「🔨 鍛造」で空き枠を補充しろ！）`;
+          breakNotice = `\n💥【武具破損！】敵の猛撃を受けて後退する際、キメラ武器の基本枠に溶接していた『${brokenItemName}』が1個砕け散ってしまった…！（「🔨 武器鍛造」で空き枠を補充しろ！）`;
         } else {
-          breakNotice = `\n🛡️【破損回避】防壁と装甲のおかげで、後退時の武器スロット破損は免れた！`;
+          breakNotice = `\n🛡️【破損回避】防壁と装甲のおかげで、後退時の基本5枠スロット破損は免れた！`;
+        }
+
+        // ★ 6枠目の素材を装填して負けた場合の消滅ログ
+        if (usedSixthInfo) {
+          sixthAwakenNotice += `\n💨【第6枠素材消滅】第6スロットに装填していた『${usedSixthInfo.item}』は使い捨てのため燃え尽きて消滅した！`;
+        }
+
+        // ★ ボス敗北時の第6スロット覚醒判定（すでにこのボスに対して覚醒中なら継続、未覚醒なら確率判定）
+        if (player.awakenedBoss === locKey) {
+          sixthAwakenNotice += `\n🔥【第6スロット覚醒継続中！】『${locData.name}』に挑み続ける限り、第6スロットは継続しているぞ！（他の場所へ移動すると消滅）`;
+        } else {
+          const awakenRate = getOverloadAwakenRate(player);
+          if (Math.random() < awakenRate) {
+            player.awakenedBoss = locKey;
+            player.sixthSlot = null;
+            sixthAwakenNotice +=
+`\n\n🔥【武器が覚醒したぞ！！（第6スロット解放）】
+死闘の衝撃でキメラ武器が限界覚醒し、イレギュラーボーナス『第6のスロット』が解放された！（覚醒率 ${(awakenRate * 100).toFixed(0)}%）
+『${locData.name}』に挑み続ける間、リッチメニューの「🔨 武器鍛造」から独立した【6枠目】に素材を装填できるぞ！
+（※6枠目の素材は使い捨てで負けたら毎回消滅。6枠目に素材を付けて勝つと戦利品無し、付けずに勝てば5枠勝利扱いで戦利品獲得！場所を移動すると6枠目は消滅する）`;
+          }
         }
       }
 
       const retryGuide = retreatLoc !== 'アジト'
-        ? `\n🔥【前線1歩後退：即リベンジ可能！】\n本陣まで戻らず、すぐ手前の『${getCurrentLocationName(player)}』で踏みとどまったぞ！\n下の「🍖 兵糧でHP全快」で傷を癒やし、「🔨 鍛造」で5枠を組み直せば、次の定時ですぐ『${locData.name}』へ再突撃できる！（兵糧がない場合は「⛺ アジトへ帰還」で本陣に戻ってタダ飯全快しろ）`
-        : `\n⛺ 兵糧を使うか、本陣の備蓄を整えて再出撃しろ！`;
+        ? `\n🔥【前線1歩後退：即リベンジ可能！】\n本陣まで戻らず、すぐ手前の『${getCurrentLocationName(player)}』で踏みとどまったぞ！\nリッチメニューの「🍖 兵糧回復」で傷を癒やし、「🔨 武器鍛造」でスロットを組み直せば、すぐ『${locData.name}』へ再突撃できる！`
+        : `\n⛺ リッチメニューの「🍖 兵糧回復」を使うか、本陣の備蓄を整えて再出撃しろ！`;
 
       summaryText =
 `\n\n【作戦失敗：1歩後退（${getCurrentLocationName(player)}）】
 ・現在地: ${getCurrentLocationName(player)}
-・部隊残HP: ${player.hp}/${battleData.stats.maxHp}（要回復！）${breakNotice}${retryGuide}
+・部隊残HP: ${player.hp}/${battleData.stats.maxHp}（要回復！）${breakNotice}${sixthAwakenNotice}${movedAwaySlotLostNotice}${retryGuide}
 \n${battleData.hint}`;
     }
 
@@ -1337,7 +1421,7 @@ ${story}${summaryText}
 `【定時作戦報告：${locData.name}】
 ${story}${summaryText}
 
-▼ 次回の行動を下のボタンから選べ。（負傷中は下の「🍖 兵糧でHP全快」からワンタップで回復できるぞ）`;
+▼ 次回の進軍先を下のボタンから選べ。`;
 
     try {
       await lineClient.pushMessage({
@@ -1437,7 +1521,7 @@ app.post('/webhook', middleware(lineConfig), async (req, res) => {
         replyToken: event.replyToken,
         messages: [{
           type: 'text',
-          text: '🔄 行動予約を一旦取り消した。下のボタンから新しい行動を選べ。',
+          text: '🔄 行動予約を一旦取り消した。下のボタンから新しい進軍先を選べ。',
           quickReply: makeQuickReply(getSmartButtons(player)),
         }],
       });
@@ -1449,7 +1533,7 @@ app.post('/webhook', middleware(lineConfig), async (req, res) => {
           replyToken: event.replyToken,
           messages: [{
             type: 'text',
-            text: '⚠️ 現在はヴァルハイト城の内部にはいないぞ！下のボタンから行動を選べ。',
+            text: '⚠️ 現在はヴァルハイト城の内部にはいないぞ！下のボタンから進軍先を選べ。',
             quickReply: makeQuickReply(getSmartButtons(player)),
           }],
         });
@@ -1513,7 +1597,7 @@ app.post('/webhook', middleware(lineConfig), async (req, res) => {
 ・現在の戦利品袋: 【 ${formatLootList(player.castleLoot)} 】
 ・引き継ぎ部隊HP: ${player.hp}/${calculateEffectiveStats(player).maxHp}
 
-※下の「⚡ 時間を進める（テスト決行）」を押せば、今すぐ次階層へ突入します！`,
+※リッチメニューの「⚡ 即時決行」を押せば、今すぐ次階層へ突入します！`,
           quickReply: makeQuickReply(getSmartButtons(player)),
         }],
       });
@@ -1553,6 +1637,10 @@ app.post('/webhook', middleware(lineConfig), async (req, res) => {
       allPlayers[userId] = player;
       saveAllPlayers(allPlayers);
 
+      const loseSlotWarn = player.awakenedBoss
+        ? `\n⚠️【注意】現在『${MAP_LOCATIONS[player.awakenedBoss]?.name || player.awakenedBoss}』に対して第6スロットが覚醒中だ！別の場所へ移動すると第6スロットは消滅するぞ！`
+        : '';
+
       await lineClient.replyMessage({
         replyToken: event.replyToken,
         messages: [{
@@ -1562,9 +1650,9 @@ app.post('/webhook', middleware(lineConfig), async (req, res) => {
 進軍ルート: 『${loc1.name}』 ➔ 『${loc2.name}』
 ・第1戦: ${loc1.name}を襲撃して素材強奪
 ・野営補給: 傷ついた場合、手持ちの『🍞兵糧』を自動で1袋食べてHP100%全快！（所持: ${player.inventory['兵糧']}袋）
-・第2戦: そのまま『${loc2.name}』へ突入して連続略奪！
+・第2戦: そのまま『${loc2.name}』へ突入して連続略奪！${loseSlotWarn}
 
-※下の「⚡ 時間を進める（テスト決行）」を押せば、今すぐ2連続略奪のリザルトが届きます！`,
+※リッチメニューの「⚡ 即時決行」を押せば、今すぐ2連続略奪のリザルトが届きます！`,
           quickReply: makeQuickReply(getSmartButtons(player)),
         }],
       });
@@ -1593,6 +1681,10 @@ app.post('/webhook', middleware(lineConfig), async (req, res) => {
         allPlayers[userId] = player;
         saveAllPlayers(allPlayers);
 
+        const loseSlotWarn = player.awakenedBoss
+          ? `\n⚠️【注意】本陣へ帰還すると、現在覚醒中の『第6スロット』は消滅するぞ！`
+          : '';
+
         await lineClient.replyMessage({
           replyToken: event.replyToken,
           messages: [{
@@ -1600,7 +1692,7 @@ app.post('/webhook', middleware(lineConfig), async (req, res) => {
             text:
 `⛺【アジト帰還（強襲凱旋）予約完了】
 次回定時、退路の人間軍哨戒部隊を蹴散らして物資を奪いながら『${getBaseName(player)}』へ帰還する！
-・帰還ボーナス: 到着と同時に部隊HPが100%全快（兵糧消費ゼロ）＆アジト強化が解禁！`,
+・帰還ボーナス: 到着と同時に部隊HPが100%全快（兵糧消費ゼロ）＆アジト強化が解禁！${loseSlotWarn}`,
             quickReply: makeQuickReply(getSmartButtons(player)),
           }],
         });
@@ -1715,14 +1807,62 @@ app.post('/webhook', middleware(lineConfig), async (req, res) => {
             }],
           });
           return;
+
+        } else if (target === '過負荷炉') {
+          const lv = player.baseFurnaceLevel || 0;
+          if (lv >= 2) {
+            await lineClient.replyMessage({
+              replyToken: event.replyToken,
+              messages: [{
+                type: 'text',
+                text: '🔥 過負荷炉はすでに最大レベル（Lv2：ボス敗北時の第6スロット覚醒率35%）に達しているぞ！',
+                quickReply: makeQuickReply(getBaseUpgradeButtons(player)),
+              }],
+            });
+            return;
+          }
+          const cost = lv === 0 ? 3 : 5;
+          if ((player.inventory['黒火薬'] || 0) < cost) {
+            await lineClient.replyMessage({
+              replyToken: event.replyToken,
+              messages: [{
+                type: 'text',
+                text: `⚠️ 過負荷炉Lv${lv + 1}への改修には『🧨黒火薬 ×${cost}個』が必要だ！（手持ち: ${player.inventory['黒火薬'] || 0}個）`,
+                quickReply: makeQuickReply(getBaseUpgradeButtons(player)),
+              }],
+            });
+            return;
+          }
+
+          player.inventory['黒火薬'] -= cost;
+          player.baseFurnaceLevel = lv + 1;
+          allPlayers[userId] = player;
+          saveAllPlayers(allPlayers);
+
+          const newAwakenRate = (getOverloadAwakenRate(player) * 100).toFixed(0);
+          await lineClient.replyMessage({
+            replyToken: event.replyToken,
+            messages: [{
+              type: 'text',
+              text:
+`🔥【アジト過負荷炉 改修完了！】
+黒火薬${cost}樽を鍛冶炉の心臓部に組み込み、過負荷炉が【Lv${player.baseFurnaceLevel}】に進化した！
+・ボス敗北時の『第6スロット』覚醒確率: ${newAwakenRate}% に上昇！`,
+              quickReply: makeQuickReply(getBaseUpgradeButtons(player)),
+            }],
+          });
+          return;
         }
       }
 
       const wallLv = player.baseWallLevel || 1;
       const armoryLv = player.baseArmoryLevel || 1;
+      const furnaceLv = player.baseFurnaceLevel || 0;
       const breakRate = (getBossBreakRate(player) * 100).toFixed(0);
+      const awakenRate = (getOverloadAwakenRate(player) * 100).toFixed(0);
       const wallNextText = wallLv < 3 ? `次Lv${wallLv + 1}（要: 🛡️装甲板×${wallLv === 1 ? 3 : 5}）` : 'MAX到達';
       const armoryNextText = armoryLv < 3 ? `次Lv${armoryLv + 1}（要: ⛏️王国鋼×${armoryLv === 1 ? 3 : 5}）` : 'MAX到達';
+      const furnaceNextText = furnaceLv < 2 ? `次Lv${furnaceLv + 1}（要: 🧨黒火薬×${furnaceLv === 0 ? 3 : 5}）` : 'MAX到達';
 
       const baseGuide =
 `🏰【${getBaseName(player)}：要塞化改修】
@@ -1735,6 +1875,9 @@ app.post('/webhook', middleware(lineConfig), async (req, res) => {
 
 ② ⛏️ 武器庫レベル: Lv${armoryLv}/3 ［${armoryNextText}］
    ・効果: 手持ち素材の保管上限 各${getMaterialCap(player)}個 / 兵糧${getRationCap(player)}袋
+
+③ 🔥 過負荷炉レベル: Lv${furnaceLv}/2 ［${furnaceNextText}］
+   ・効果: ボス敗北時の『第6スロット』覚醒率 ${awakenRate}%（初期15% ➔ Lv1:25% ➔ Lv2:35%）
 
 【手持ちの資材】
 ⛏️鋼: ${player.inventory['王国鋼']}/${getMaterialCap(player)}個 | 🛡️板: ${player.inventory['装甲板']}/${getMaterialCap(player)}個 | 🧨火: ${player.inventory['黒火薬']}/${getMaterialCap(player)}個 | 🔮石: ${player.inventory['魔導石']}/${getMaterialCap(player)}個
@@ -1841,6 +1984,15 @@ app.post('/webhook', middleware(lineConfig), async (req, res) => {
         breakRiskNote = `\n⚠️【ボス戦注意】敗走すると ${(getBossBreakRate(player) * 100).toFixed(0)}% の確率で装着素材が1個砕け散るが、本陣までは戻されず直前マスへ1歩後退してすぐ再挑戦できるぞ！`;
       }
 
+      if (player.awakenedBoss) {
+        if (matchedKey === player.awakenedBoss) {
+          const sixthLabel = player.sixthSlot ? getSlotItemInfo(player.sixthSlot).label : '未装填（空：5枠勝利扱い）';
+          breakRiskNote += `\n🔥【第6スロット覚醒継続中】現在の6枠目: ${sixthLabel}`;
+        } else {
+          breakRiskNote += `\n⚠️【注意】対象ボス（${MAP_LOCATIONS[player.awakenedBoss]?.name || player.awakenedBoss}）以外の場所へ移動すると、覚醒中の『第6スロット』は消滅するぞ！`;
+        }
+      }
+
       await lineClient.replyMessage({
         replyToken: event.replyToken,
         messages: [{
@@ -1851,7 +2003,7 @@ app.post('/webhook', middleware(lineConfig), async (req, res) => {
 ・現在地: ${getCurrentLocationName(player)}
 ・内容: ${loc.desc}${breakRiskNote}
 
-※下の「⚡ 時間を進める（テスト決行）」を押せば、定時を待たずに今すぐ突撃できます。`,
+※リッチメニューの「⚡ 即時決行」を押せば、定時を待たずに今すぐ突撃できます。`,
           quickReply: makeQuickReply(getSmartButtons(player)),
         }],
       });
@@ -1870,7 +2022,7 @@ app.post('/webhook', middleware(lineConfig), async (req, res) => {
       });
       await executeScheduledRaids(userId, isDef);
 
-    // F. 鍛冶場・キメラ武器改造（リッチメニュー「🔨 武器鍛造」連動）
+    // F. 鍛冶場・キメラ武器改造（リッチメニュー「🔨 武器鍛造」連動：基本5枠＋独立第6枠）
     } else if (userText.includes('鍛造') || userText.includes('鍛冶') || userText.includes('改造') || userText.includes('武器')) {
       const s = player.slots;
       const total = getTotalSlots(s);
@@ -1879,13 +2031,23 @@ app.post('/webhook', middleware(lineConfig), async (req, res) => {
 
       const stoneInfo = s.stone > 0 ? `\n・🔮 魔導石: ${s.stone}枠 (攻+${s.stone * 3} / 防-${s.stone * 1} / HP-${s.stone * 6}% / 吸血+${s.stone * 20}%)` : '';
 
+      let sixthSection = '';
+      if (player.awakenedBoss) {
+        const bossTitle = MAP_LOCATIONS[player.awakenedBoss]?.name || player.awakenedBoss;
+        const sixthInfo = player.sixthSlot ? getSlotItemInfo(player.sixthSlot).label : '【空（未装填：このまま勝てば5枠勝利扱い）】';
+        sixthSection =
+`\n\n🔥【覚醒・独立第6スロット（対：${bossTitle}）】
+・6枠目: ${sixthInfo}
+（※6枠目の素材は使い捨てで戦闘後に消滅。装着して勝つと戦利品無し。場所移動で6枠目消滅）`;
+      }
+
       const forgeGuide =
 `🔨【キメラ武器5枠鍛造】（現在地: ${getCurrentLocationName(player)}）
 主武装: ${player.weapon}
-枠状況: [${total}/5枠 装着中]
+基本枠状況: [${total}/5枠 装着中]
 ・⛏️ 王国鋼: ${s.steel}枠 (攻+${s.steel * 7} / 防-${s.steel * 2})
 ・🛡️ 装甲板: ${s.plate}枠 (防+${s.plate * 6} / 攻-${s.plate * 2})
-・🧨 黒火薬: ${s.powder}枠 (会心+${s.powder * 13}% / 回避+${s.powder * 7}% / 攻-${s.powder * 2} / 防-${s.powder * 1})${stoneInfo}
+・🧨 黒火薬: ${s.powder}枠 (会心+${s.powder * 13}% / 回避+${s.powder * 7}% / 攻-${s.powder * 2} / 防-${s.powder * 1})${stoneInfo}${sixthSection}
 
 【実効ステータス】
 HP: ${player.hp}/${stats.maxHp} | 攻撃: ${stats.atk} | 防御: ${stats.def}
@@ -1896,7 +2058,7 @@ HP: ${player.hp}/${stats.maxHp} | 攻撃: ${stats.atk} | 防御: ${stats.def}
 【手持ち素材（上限: 各${cap}個）】
 ⛏️鋼: ${player.inventory['王国鋼']}個 | 🛡️板: ${player.inventory['装甲板']}個 | 🧨火: ${player.inventory['黒火薬']}個 | 🔮石: ${player.inventory['魔導石']}個
 
-▼ 下のボタンで素材を1枠ずつ溶接するか、全スロット外して組み直せ。`;
+▼ 下のボタンで素材を溶接・付け替えろ。`;
 
       await lineClient.replyMessage({
         replyToken: event.replyToken,
@@ -1907,7 +2069,103 @@ HP: ${player.hp}/${stats.maxHp} | 攻撃: ${stats.atk} | 防御: ${stats.def}
         }],
       });
 
-    // G. スロット操作
+    // G-0. 独立第6スロット操作（覚醒中のみ・自由付け替え＆解除）
+    } else if (userText.startsWith('6枠：')) {
+      if (!player.awakenedBoss) {
+        await lineClient.replyMessage({
+          replyToken: event.replyToken,
+          messages: [{
+            type: 'text',
+            text: '⚠️ 現在『第6スロット』は覚醒していないぞ！（ボス戦敗北時に一定確率で覚醒する）',
+            quickReply: makeQuickReply(getForgeButtons(player)),
+          }],
+        });
+        return;
+      }
+
+      const type = userText.replace('6枠：', '').trim();
+
+      if (type === '外す' || type === '解除' || type === 'リセット') {
+        if (player.sixthSlot) {
+          const prevInfo = getSlotItemInfo(player.sixthSlot);
+          if (prevInfo) {
+            player.inventory[prevInfo.item] = (player.inventory[prevInfo.item] || 0) + 1;
+          }
+          player.sixthSlot = null;
+        }
+        const stats = calculateEffectiveStats(player);
+        if (player.hp > stats.maxHp) player.hp = stats.maxHp;
+        allPlayers[userId] = player;
+        saveAllPlayers(allPlayers);
+
+        await lineClient.replyMessage({
+          replyToken: event.replyToken,
+          messages: [{
+            type: 'text',
+            text:
+`❌【第6スロット解除（5枠状態へ復帰）】
+6枠目の素材を取り外して手持ちに戻し、6枠目を【空】にしたぞ！
+（※このまま6枠目に付けずにボスに勝てば、通常通り5枠での勝利扱いとなり戦利品をすべて獲得できる！）
+
+【最新ステータス】
+HP: ${player.hp}/${stats.maxHp} | 攻撃: ${stats.atk} | 防御: ${stats.def} | 会心: ${(stats.critRate * 100).toFixed(0)}% | 吸血: ${(stats.drainRate * 100).toFixed(0)}%`,
+            quickReply: makeQuickReply(getForgeButtons(player)),
+          }],
+        });
+        return;
+      }
+
+      let itemKey = '';
+      let slotKey = '';
+      if (type === '鋼' || type === '鉄') { itemKey = '王国鋼'; slotKey = 'steel'; }
+      if (type === '板' || type === '盾') { itemKey = '装甲板'; slotKey = 'plate'; }
+      if (type === '火' || type === '火薬') { itemKey = '黒火薬'; slotKey = 'powder'; }
+      if (type === '石' || type === '魔導石') { itemKey = '魔導石'; slotKey = 'stone'; }
+
+      if (!itemKey || (player.inventory[itemKey] || 0) <= 0) {
+        await lineClient.replyMessage({
+          replyToken: event.replyToken,
+          messages: [{
+            type: 'text',
+            text: `⚠️ 手持ちの『${itemKey || '素材'}』が足りない！`,
+            quickReply: makeQuickReply(getForgeButtons(player)),
+          }],
+        });
+        return;
+      }
+
+      // すでに別の素材が6枠目に入っていた場合は手持ちに返却して付け替える
+      if (player.sixthSlot) {
+        const prevInfo = getSlotItemInfo(player.sixthSlot);
+        if (prevInfo) {
+          player.inventory[prevInfo.item] = (player.inventory[prevInfo.item] || 0) + 1;
+        }
+      }
+
+      player.inventory[itemKey] -= 1;
+      player.sixthSlot = slotKey;
+      const newStats = calculateEffectiveStats(player);
+      if (player.hp > newStats.maxHp) player.hp = newStats.maxHp;
+
+      allPlayers[userId] = player;
+      saveAllPlayers(allPlayers);
+
+      await lineClient.replyMessage({
+        replyToken: event.replyToken,
+        messages: [{
+          type: 'text',
+          text:
+`🔥【覚醒・第6スロット装填完了！】
+独立第6枠に『${itemKey}』を装填した！（基本5枠: ⛏️鋼${player.slots.steel}/🛡️板${player.slots.plate}/🧨火${player.slots.powder}/🔮石${player.slots.stone} ＋ 🔥6枠目:${itemKey}）
+⚠️ 6枠目の素材は使い捨てで戦闘後に消滅し、勝っても戦利品は無しになるぞ！（5枠扱いに戻すなら「❌ 6枠目を外す」を押せ）
+
+【最新ステータス（6枠合算）】
+HP: ${player.hp}/${newStats.maxHp} | 攻撃: ${newStats.atk} | 防御: ${newStats.def} | 会心: ${(newStats.critRate * 100).toFixed(0)}% | 吸血: ${(newStats.drainRate * 100).toFixed(0)}%`,
+          quickReply: makeQuickReply(getForgeButtons(player)),
+        }],
+      });
+
+    // G. 基本5枠スロット操作
     } else if (userText.startsWith('スロット：')) {
       const type = userText.replace('スロット：', '').trim();
       const s = player.slots;
@@ -1928,9 +2186,9 @@ HP: ${player.hp}/${stats.maxHp} | 攻撃: ${stats.atk} | 防御: ${stats.def}
           messages: [{
             type: 'text',
             text:
-`🔄【全スロット初期化】
-溶接していた素材をすべて引き剥がし、手元に回収した！（現在 0/5枠）
-基礎能力: 攻${stats.atk} / 防${stats.def} / 会心10% / 回避5%
+`🔄【基本5枠スロット初期化】
+基本5枠に溶接していた素材をすべて引き剥がし、手元に回収した！（現在 0/5枠）
+実効能力: 攻${stats.atk} / 防${stats.def} / 会心${(stats.critRate * 100).toFixed(0)}% / 回避${(stats.dodgeRate * 100).toFixed(0)}%
 手持ち: ⛏️鋼${player.inventory['王国鋼']} / 🛡️板${player.inventory['装甲板']} / 🧨火${player.inventory['黒火薬']} / 🔮石${player.inventory['魔導石']}
 
 ▼ 下のボタンから新しく5枠を組み直せ。`,
@@ -1945,7 +2203,7 @@ HP: ${player.hp}/${stats.maxHp} | 攻撃: ${stats.atk} | 防御: ${stats.def}
           replyToken: event.replyToken,
           messages: [{
             type: 'text',
-            text: '⚠️ すでに5枠すべて埋まっている！「🔄 全スロット外す(初期化)」を押してから組み直せ。',
+            text: '⚠️ 基本の5枠はすでにすべて埋まっている！「🔄 5枠すべて外す(初期化)」を押してから組み直すか、覚醒中なら「🔥 6枠目」のボタンを押せ。',
             quickReply: makeQuickReply(getForgeButtons(player)),
           }],
         });
@@ -1980,20 +2238,23 @@ HP: ${player.hp}/${stats.maxHp} | 攻撃: ${stats.atk} | 防御: ${stats.def}
       saveAllPlayers(allPlayers);
 
       const newTotal = getTotalSlots(player.slots);
+      const sixthNote = player.awakenedBoss
+        ? `\n🔥 覚醒第6枠: [${player.sixthSlot ? getSlotItemInfo(player.sixthSlot).item : '未装填(空)'}]`
+        : '';
 
       await lineClient.replyMessage({
         replyToken: event.replyToken,
         messages: [{
           type: 'text',
           text:
-`🔨【キメラ溶接成功】『${itemKey}』を武器に打ち込んだ！
-枠状況: [${newTotal}/5枠] (⛏️鋼:${player.slots.steel} / 🛡️板:${player.slots.plate} / 🧨火:${player.slots.powder} / 🔮石:${player.slots.stone})
+`🔨【キメラ溶接成功】『${itemKey}』を基本枠に打ち込んだ！
+基本枠状況: [${newTotal}/5枠] (⛏️鋼:${player.slots.steel} / 🛡️板:${player.slots.plate} / 🧨火:${player.slots.powder} / 🔮石:${player.slots.stone})${sixthNote}
 
 【最新ステータス】
 HP: ${player.hp}/${newStats.maxHp} | 攻撃: ${newStats.atk} | 防御: ${newStats.def} | 会心: ${(newStats.critRate * 100).toFixed(0)}% | 吸血: ${(newStats.drainRate * 100).toFixed(0)}%
 残り手持ち: 鋼${player.inventory['王国鋼']} / 板${player.inventory['装甲板']} / 火${player.inventory['黒火薬']} / 石${player.inventory['魔導石']}
 
-${newTotal < 5 ? '▼ 続けて残りの枠を込めろ。' : '✅ 5枠すべて完成した！出撃先を選んで突撃しろ！'}`,
+${newTotal < 5 ? '▼ 続けて残りの枠を込めろ。' : '✅ 5枠すべて完成した！リッチメニューの「🗺️ 作戦地図」から出撃先を選んで突撃しろ！'}`,
           quickReply: makeQuickReply(getForgeButtons(player)),
         }],
       });
@@ -2078,6 +2339,10 @@ ${newTotal < 5 ? '▼ 続けて残りの枠を込めろ。' : '✅ 5枠すべて
         ? `\n・🎒 城内戦利品袋: ${formatLootList(player.castleLoot)}`
         : '';
 
+      const sixthStatusLine = player.awakenedBoss
+        ? `\n・🔥 覚醒第6枠（対${MAP_LOCATIONS[player.awakenedBoss]?.name || player.awakenedBoss}）: ${player.sixthSlot ? getSlotItemInfo(player.sixthSlot).label : '未装填（空）'}`
+        : '';
+
       await lineClient.replyMessage({
         replyToken: event.replyToken,
         messages: [{
@@ -2092,10 +2357,11 @@ ${newTotal < 5 ? '▼ 続けて残りの枠を込めろ。' : '✅ 5枠すべて
 【本陣設備（${getBaseName(player)}）】
 ・🛡️ 防壁: Lv${player.baseWallLevel}/3 (破損率 ${(getBossBreakRate(player) * 100).toFixed(0)}%)
 ・⛏️ 武器庫: Lv${player.baseArmoryLevel}/3 (保管上限 各${cap}個)
+・🔥 過負荷炉: Lv${player.baseFurnaceLevel || 0}/2 (6枠覚醒率 ${(getOverloadAwakenRate(player) * 100).toFixed(0)}%)
 
 【キメラ主武装】
 ${player.weapon} [${total}/5枠]
-・⛏️ 鋼: ${s.steel}枠 | 🛡️ 板: ${s.plate}枠 | 🧨 火: ${s.powder}枠 | 🔮 石: ${s.stone}枠
+・⛏️ 鋼: ${s.steel}枠 | 🛡️ 板: ${s.plate}枠 | 🧨 火: ${s.powder}枠 | 🔮 石: ${s.stone}枠${sixthStatusLine}
 
 【実効戦闘能力】
 ・部隊HP: ${player.hp} / ${stats.maxHp}
@@ -2150,7 +2416,7 @@ ${player.weapon} [${total}/5枠]
         replyToken: event.replyToken,
         messages: [{
           type: 'text',
-          text: `現在地は【${getCurrentLocationName(player)}】だ。下のボタンから作戦地図を見るか、次回定時の行動を選べ。`,
+          text: `現在地は【${getCurrentLocationName(player)}】だ。下のボタンから次回定時の進軍先を選べ。`,
           quickReply: makeQuickReply(getSmartButtons(player)),
         }],
       });

@@ -3,7 +3,7 @@
 // ==========================================
 
 /**
- * 武器スロットの合計装着数を返す
+ * 武器スロットの合計装着数を返す（基本5枠）
  */
 export function getTotalSlots(slots) {
     return (slots.steel || 0) + (slots.plate || 0) + (slots.powder || 0) + (slots.stone || 0);
@@ -30,7 +30,18 @@ export function getTotalSlots(slots) {
   }
   
   /**
-   * ボス敗走時のスロット素材破損判定
+   * 過負荷炉レベルに応じたボス敗北時の「第6スロット覚醒確率」を返す
+   * Lv0(未建造): 15%, Lv1: 25%, Lv2: 35%
+   */
+  export function getOverloadAwakenRate(player) {
+    const lv = player.baseFurnaceLevel || 0;
+    if (lv >= 2) return 0.35;
+    if (lv === 1) return 0.25;
+    return 0.15;
+  }
+  
+  /**
+   * ボス敗走時のスロット素材破損判定（基本5枠のみ対象）
    */
   export function tryBreakSlotMaterial(player) {
     const breakRate = getBossBreakRate(player);
@@ -50,16 +61,22 @@ export function getTotalSlots(slots) {
   }
   
   /**
-   * 武器5枠強化パズル計算エンジン（黄金比完全準拠）
+   * 武器5枠強化パズル計算エンジン（黄金比完全準拠 ＋ 独立第6スロット加算対応）
    */
   export function calculateEffectiveStats(player) {
     const s = player.slots;
-    const stoneCount = s.stone || 0;
+    const sixth = player.sixthSlot; // 'steel' | 'plate' | 'powder' | 'stone' | null
+  
+    const steelCount = (s.steel || 0) + (sixth === 'steel' ? 1 : 0);
+    const plateCount = (s.plate || 0) + (sixth === 'plate' ? 1 : 0);
+    const powderCount = (s.powder || 0) + (sixth === 'powder' ? 1 : 0);
+    const stoneCount = (s.stone || 0) + (sixth === 'stone' ? 1 : 0);
+  
     const maxHp = Math.max(20, Math.floor(player.baseHp * (1 - stoneCount * 0.06)));
-    const atk = Math.max(5, player.baseAtk + (s.steel * 7) - (s.plate * 2) - (s.powder * 2) + (stoneCount * 3));
-    const def = Math.max(0, player.baseDef + (s.plate * 6) - (s.steel * 2) - (s.powder * 1) - (stoneCount * 1));
-    const critRate = Math.min(0.95, 0.10 + (s.powder * 0.13));
-    const dodgeRate = Math.min(0.40, 0.05 + (s.powder * 0.07));
+    const atk = Math.max(5, player.baseAtk + (steelCount * 7) - (plateCount * 2) - (powderCount * 2) + (stoneCount * 3));
+    const def = Math.max(0, player.baseDef + (plateCount * 6) - (steelCount * 2) - (powderCount * 1) - (stoneCount * 1));
+    const critRate = Math.min(0.95, 0.10 + (powderCount * 0.13));
+    const dodgeRate = Math.min(0.40, 0.05 + (powderCount * 0.07));
     const drainRate = Math.min(0.80, stoneCount * 0.20);
   
     return { maxHp, atk, def, critRate, dodgeRate, drainRate };
@@ -142,7 +159,7 @@ export function getTotalSlots(slots) {
       eHP -= pDmg;
   
       if (stats.drainRate > 0 && pHP > 0) {
-        const stoneCount = player.slots.stone || 0;
+        const stoneCount = (player.slots.stone || 0) + (player.sixthSlot === 'stone' ? 1 : 0);
         const drainHeal = Math.max(4 * stoneCount, Math.floor(pDmg * stats.drainRate));
         pHP = Math.min(stats.maxHp, pHP + drainHeal);
         logs.push({
@@ -230,6 +247,7 @@ export function getTotalSlots(slots) {
     if (!isWin) {
       const avgDamage = totalDamageDealt / (playerTurnCount || 1);
       const totalEquipped = getTotalSlots(player.slots);
+      const totalPowder = (player.slots.powder || 0) + (player.sixthSlot === 'powder' ? 1 : 0);
   
       if (totalEquipped < 5) {
         hint = `💡【敗因分析】武器のスロットが [${totalEquipped}/5枠] しか埋まっていない！「鍛造」で5枠すべて埋めろ！`;
@@ -243,7 +261,7 @@ export function getTotalSlots(slots) {
         hint = `💡【敗因分析】神聖盾の反射ダメージ（30%）と重装甲（防20）に阻まれた！『🔮魔導石』を2〜3個積んで反射を上回る吸血（40%〜60%）を確保し、残りを『⛏️鋼』で固めて削り勝て！`;
       } else if (enemy.gimmick === 'SUPER_ARMOR' && avgDamage <= 4) {
         hint = `💡【敗因分析】対魔神聖巨像アークエンゼルの装甲（防御25）が分厚すぎる！『🧨黒火薬』の装甲半減貫通会心を叩き込むか、『⛏️鋼』を限界まで積め！`;
-      } else if (player.slots.powder >= 4) {
+      } else if (totalPowder >= 4) {
         hint = `💡【敗因分析】『🧨黒火薬』を詰め込みすぎて基礎打点と装甲が脆い！芯となる『⛏️王国鋼』や『🛡️装甲板』を混ぜろ！`;
       } else if (avgDamage <= 3) {
         hint = `💡【敗因分析】敵の装甲（防御${enemy.def}）が厚くて刃が通っていない！『⛏️王国鋼』を増やして基礎攻撃力を引き上げろ！`;
