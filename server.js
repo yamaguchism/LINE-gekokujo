@@ -54,7 +54,7 @@ const app = express();
 app.use('/public', express.static(path.resolve('public')));
 
 // ==========================================
-// 3. プレイヤーデータ永続化（Supabase ＆ ローカルバックアップ連動）＆自動マイグレーション
+// 3. プレイヤーデータ永続化（完全独立セーブ ＆ ローカルバックアップ連動）
 // ==========================================
 const DB_FILE = path.resolve('players.json');
 
@@ -129,10 +129,9 @@ function createInitialPlayer(userId) {
   };
 }
 
-// プレイヤーデータの欠損補完＆マイグレーション（既存ロジック完全維持）
+// プレイヤーデータの欠損補完＆マイグレーション
 function normalizePlayer(p, userId) {
   p.userId = userId;
-  // 黄金比基礎値の固定
   p.baseHp = 100;
   p.baseAtk = 24;
   p.baseDef = 12;
@@ -185,7 +184,6 @@ function rowToPlayer(row) {
   const uid = row.line_user_id;
   const raw = row.inventory;
   let p;
-  // inventory(JSONB)にプレイヤー全体のオブジェクトが保存されている場合はそれを展開
   if (raw && typeof raw === 'object' && ('slots' in raw || 'ch1Step' in raw || 'userId' in raw)) {
     p = { ...raw };
   } else {
@@ -199,69 +197,76 @@ function rowToPlayer(row) {
   return normalizePlayer(p, uid);
 }
 
-// 全プレイヤーデータの読み込み（Supabase優先 ＋ ローカルフォールバック）
-async function loadAllPlayers() {
-  const localData = loadLocalPlayers();
-  if (!supabase) return localData;
+// ★【新設】単一プレイヤーのみをDBから取得（他人のデータには一切干渉しない）
+async function loadPlayer(userId) {
+  if (supabase) {
+    try {
+      const { data, error } = await supabase
+        .from('players')
+        .select('*')
+        .eq('line_user_id', userId)
+        .maybeSingle();
 
-  try {
-    const { data, error } = await supabase.from('players').select('*');
-    if (error) {
-      console.error('Supabase 全件読み込みエラー:', error.message);
-      return localData;
+      if (error) {
+        console.error(`Supabase 個別読み込みエラー (${userId}):`, error.message);
+      } else if (data) {
+        return rowToPlayer(data);
+      }
+    } catch (err) {
+      console.error(`Supabase 通信例外(loadPlayer):`, err);
     }
-    const merged = { ...localData };
-    for (const row of data || []) {
-      if (!row.line_user_id) continue;
-      merged[row.line_user_id] = rowToPlayer(row);
-    }
-    saveLocalPlayers(merged);
-    return merged;
-  } catch (err) {
-    console.error('Supabase 通信例外(loadAllPlayers):', err);
-    return localData;
   }
+
+  // フォールバック：ローカルJSONから該当ユーザーのみ取得
+  const localData = loadLocalPlayers();
+  if (localData[userId]) {
+    return normalizePlayer(localData[userId], userId);
+  }
+  return null;
 }
 
-// 全プレイヤーデータの保存（Supabase Upsert ＋ ローカル保存）
-async function saveAllPlayers(allPlayers) {
-  saveLocalPlayers(allPlayers);
+// ★【新設】単一プレイヤーのみをDBへピンポイント上書き保存（全員巻き込み上書き事故を根絶）
+async function savePlayer(player) {
+  if (!player || !player.userId) return;
+
+  // ローカルJSONのキャッシュ更新
+  const localData = loadLocalPlayers();
+  localData[player.userId] = player;
+  saveLocalPlayers(localData);
+
   if (!supabase) return;
 
   try {
-    const rows = Object.entries(allPlayers).map(([uid, p]) => ({
-      line_user_id: uid,
-      hp: p.hp ?? 100,
-      max_hp: p.baseHp ?? 100,
-      current_stage: p.currentLocation || 'アジト',
-      inventory: p, // JSONBカラムに全ステータス・スロット・進行度・所持品を丸ごと格納
+    const row = {
+      line_user_id: player.userId,
+      hp: player.hp ?? 100,
+      max_hp: player.baseHp ?? 100,
+      current_stage: player.currentLocation || 'アジト',
+      inventory: player,
       updated_at: new Date().toISOString(),
-    }));
-
-    if (rows.length === 0) return;
+    };
 
     const { error } = await supabase
       .from('players')
-      .upsert(rows, { onConflict: 'line_user_id' });
+      .upsert([row], { onConflict: 'line_user_id' });
 
     if (error) {
-      console.error('Supabase 保存(Upsert)エラー:', error.message);
+      console.error(`Supabase 個別保存(Upsert)エラー (${player.userId}):`, error.message);
     }
   } catch (err) {
-    console.error('Supabase 通信例外(saveAllPlayers):', err);
+    console.error(`Supabase 通信例外(savePlayer):`, err);
   }
 }
 
-// 単一プレイヤーの取得または新規作成（Supabase直結）
+// 単一プレイヤーの取得または新規作成
 async function getOrCreatePlayer(userId) {
-  const players = await loadAllPlayers();
-  if (!players[userId]) {
-    players[userId] = createInitialPlayer(userId);
+  let player = await loadPlayer(userId);
+  if (!player) {
+    player = createInitialPlayer(userId);
   }
-  const p = normalizePlayer(players[userId], userId);
-  players[userId] = p;
-  await saveAllPlayers(players);
-  return { player: p, allPlayers: players };
+  player = normalizePlayer(player, userId);
+  await savePlayer(player);
+  return { player };
 }
 
 // 第6枠の素材キーと表示名の変換ヘルパー
@@ -304,13 +309,11 @@ function getCurrentLocationName(player) {
 // 敗走時の「1歩後退（直前ノード）」を返す関数
 function getRetreatLocation(locKey) {
   const retreatMap = {
-    // 黒鉄の峡谷地帯
     '検問所': '渓谷',
     '前哨砦': '街道',
     '要塞門': '前哨砦',
     '渓谷': 'アジト',
     '街道': 'アジト',
-    // 聖涙川の教会平原
     '工房跡': '礼拝堂',
     '大聖堂': '工房跡',
     '大霊廟': '礼拝堂',
@@ -319,7 +322,6 @@ function getRetreatLocation(locKey) {
     '礼拝堂': '農村',
     '農村': 'アジト',
     '兵站所': 'アジト',
-    // 覇権の万魔中央回廊
     '遠征軍総本陣': '回廊関門',
     '回廊関門': '前線宿営地',
     '前線宿営地': '中立交易区',
@@ -400,7 +402,6 @@ function resolveMapImageUrl(player, req) {
   const isCh3 = player.chapter >= 3 || player.ch2Step >= 2;
   const isCh2 = !isCh3 && (player.chapter >= 2 || player.ch1Step >= 3);
 
-  // ★軽量JPEG（.jpg）を最優先で探索し、なければPNGを探す
   const candidates = [];
   if (isCh3) {
     candidates.push('chapter3_world_map.jpg', 'chapter3_map.jpg', 'chapter3_world_map.png', 'chapter3_map.png');
@@ -420,157 +421,13 @@ function resolveMapImageUrl(player, req) {
 }
 
 // ==========================================
-// 4. 動的作戦地図＆進路ナビゲーション生成エンジン（地勢型パッケージC適用・AA全廃版）
-// ==========================================
-function generateDynamicMapGuide(player) {
-  const cur = player.currentLocation || 'アジト';
-  const isCh3 = player.chapter >= 3 || player.ch2Step >= 2;
-  const isCh2 = !isCh3 && (player.chapter >= 2 || player.ch1Step >= 3);
-
-  // ----------------------------------------------------
-  // 【黒鉄の峡谷地帯】（旧：第1章）
-  // ----------------------------------------------------
-  if (!isCh2 && !isCh3) {
-    const stepNames = ['①国境検問所（新兵ガルシア）', '②前哨砦（魔導重装兵バルツ）', '③人間軍の要塞門（守備隊長ロシュ）'];
-    const curTarget = stepNames[player.ch1Step] || '要塞門突破完了！';
-
-    return `🗺️【黒鉄の峡谷地帯：進軍地勢案内】
-📍 現在地：${getCurrentLocationName(player)}
-🎯 作戦目標：『${curTarget}』
-
-━━━━━━━━━━━━━━━━━━━━━
-🧭【現在地から進軍可能なルート】
-・⛏️ 黒鉄渓谷 ➔ 『⛏️王国鋼』『🛡️装甲板』を強奪
-・🍞 補給街道 ➔ 『🧨黒火薬』『🍞兵糧×2袋』を強奪
-・⚔️ 前線関門 ➔ 守備隊を粉砕して要塞門を奪い取れ！
-・⛺ アジト帰還 ➔ 兵糧消費ゼロで部隊HP100%全快！`;
-  }
-
-  // ----------------------------------------------------
-  // 【覇権の万魔中央回廊】（旧：第3章）
-  // ----------------------------------------------------
-  if (isCh3 && !['農村', '兵站所', '礼拝堂', '工房跡', '大聖堂', '跳ね橋', 'ヴァルハイト城', '大霊廟'].includes(cur)) {
-    let advice3 = '';
-    if (cur === 'アジト') {
-      advice3 = `① 🍷 中立交易区へ進軍
-   └ 兵糧×2と魔導石を徴発し、前線宿営地へ迫る北ルート
-② ⚒️ 補給工廠へ進軍
-   └ 装甲板と王国鋼を強奪し、前線宿営地へ迫る南ルート
-③ 🌉 旧領・跳ね橋へ遠征
-   └ 聖涙川の教会平原『ヴァルハイト城（3連強襲）』へ`;
-    } else if (cur === '中立交易区') {
-      advice3 = `① 💣 前線宿営地へ進軍
-   └ 黒火薬と王国鋼を奪い、中ボス『回廊関門』へ迫る！
-② ⚒️ 補給工廠へ移動
-   └ 装甲板と王国鋼を補充する南北連絡路
-③ ⛺ 本陣へ帰還
-   └ 兵糧消費ゼロで部隊HP100%全快＆本陣強化`;
-    } else if (cur === '補給工廠') {
-      advice3 = `① 💣 前線宿営地へ進軍
-   └ 黒火薬と王国鋼を奪い、中ボス『回廊関門』へ迫る！
-② 🍷 中立交易区へ移動
-   └ 兵糧×2と魔導石を補充する南北連絡路
-③ ⛺ 本陣へ帰還
-   └ 兵糧消費ゼロで部隊HP100%全快＆本陣強化`;
-    } else if (cur === '前線宿営地') {
-      advice3 = `① ⚔️ 回廊関門へ進軍
-   └ 回廊中ボス『近衛重装騎士長アルバート』を討伐せよ！
-② 🍷 交易区 / ⚒️ 補給工廠へ移動
-   └ 物資と兵糧の調達・ビルド調整
-③ ⛺ 本陣へ帰還
-   └ 兵糧消費ゼロで部隊HP100%全快＆本陣強化`;
-    } else if (cur === '回廊関門') {
-      advice3 = `① 🏰 遠征軍総本陣へ進軍
-   └ 回廊大ボス『聖騎士元帥ジークフリート』を粉砕せよ！
-② 💣 前線宿営地へ後退
-   └ 黒火薬と王国鋼を集めて超火力ビルドを構築
-③ ⛺ 本陣へ帰還
-   └ 兵糧消費ゼロで部隊HP100%全快＆本陣強化`;
-    } else {
-      advice3 = `・周囲の拠点で資材を集め、キメラ武器の5枠を最適化して英傑たちに挑め！`;
-    }
-
-    let obj3 = '';
-    if (player.ch3Step === 0) {
-      obj3 = '回廊中ボス『⚔️ 近衛重装騎士長アルバート（回廊関門）』を撃破せよ！（※HP半減で攻撃力56に狂乱覚醒！）';
-    } else if (player.ch3Step === 1) {
-      obj3 = '回廊大ボス『🏰 聖騎士元帥ジークフリート（遠征軍総本陣）』を6ターン以内に削り切れ！（※鋼と火薬の超火力必須！）';
-    } else {
-      obj3 = '👑 覇権の万魔中央回廊 完全制圧完了！！（遠征軍総本陣を占領支配中！）';
-    }
-
-    return `🗺️【覇権の万魔中央回廊：進軍地勢案内】
-📍 現在地：${getCurrentLocationName(player)}
-🎯 作戦目標：${obj3}
-
-━━━━━━━━━━━━━━━━━━━━━
-🧭【現在地（${cur}）からの進路案内】
-${advice3}`;
-  }
-
-  // ----------------------------------------------------
-  // 【聖涙川の教会平原】（旧：第2章）
-  // ----------------------------------------------------
-  let localAdvice = '';
-  if (cur === 'アジト') {
-    localAdvice = `① 🌾 農村へ進軍 ➔ 兵糧×2と鋼を奪取し、北東の礼拝堂・本編ボス方面へ向かうルート
-② ⚒️ 兵站所へ進軍 ➔ 装甲板と鋼を奪取し、南東の跳ね橋・ヴァルハイト城へ向かうルート`;
-  } else if (cur === '農村') {
-    localAdvice = `① ⛪ 礼拝堂へ進軍 ➔ 魔導石と火薬を奪取！奥の中ボス『工房跡』への本編侵攻路
-② ⚒️ 兵站所へ移動 ➔ 装甲板を補充し、城攻め（跳ね橋）へ向かう連絡路
-③ ⛺ 本陣へ帰還 ➔ 兵糧消費ゼロで部隊HP100%全快＆本陣強化`;
-  } else if (cur === '兵站所') {
-    localAdvice = `① 🌉 跳ね橋へ進軍 ➔ 攻城前哨戦！鉄鎖を両断してヴァルハイト城への道を開く
-② 🌾 農村へ移動 ➔ 兵糧を補充し、本編攻略（礼拝堂方面）へ合流する連絡路
-③ ⛺ 本陣へ帰還 ➔ 兵糧消費ゼロで部隊HP100%全快＆本陣強化`;
-  } else if (cur === '礼拝堂') {
-    localAdvice = `① 🧪 工房跡へ進軍 ➔ 平原中ボス『従軍錬金術師（猛毒ガス）』を討伐！
-② 💀 禁忌大霊廟へ突入 ➔ 【単発腕試し】超重装甲の神聖巨像を倒せば全素材一括強奪！
-③ 🌾 農村へ移動 ➔ 兵糧補充のために後退
-④ ⛺ 本陣へ帰還 ➔ 兵糧消費ゼロで部隊HP100%全快＆本陣強化`;
-  } else if (cur === '工房跡') {
-    localAdvice = `① 🏰 大聖堂へ進軍 ➔ 平原大ボス『聖堂重騎士（反射盾）』を叩き割り教会平原を制圧！
-② ⛪ 礼拝堂へ後退 ➔ 魔導石を補充してスロットを再調整
-③ ⛺ 本陣へ帰還 ➔ 兵糧消費ゼロで部隊HP100%全快＆本陣強化`;
-  } else if (cur === '跳ね橋') {
-    localAdvice = `① 🏯 ヴァルハイト城へ突入 ➔ 【3連撃チキンレース】外郭・内城・天守の宝物庫を強奪！
-② ⚒️ 兵站所へ後退 ➔ 態勢を立て直して物資補充
-③ ⛺ 本陣へ帰還 ➔ 兵糧消費ゼロで部隊HP100%全快＆本陣強化`;
-  } else if (cur === 'ヴァルハイト城') {
-    localAdvice = `⚠️【城郭強襲潜入中】城内での兵糧回復は不可！
-・『城郭：突撃』で残HPのまま次階層へ挑むか、『城郭：脱出』で戦利品を抱えて跳ね橋へ脱出せよ！`;
-  } else {
-    localAdvice = `・周囲のエリアへ進軍して素材を略奪するか、『⛺ アジトへ帰還』で体勢を立て直せ！`;
-  }
-
-  let objective = '';
-  if (player.ch2Step === 0) {
-    objective = '平原中ボス『🧪 従軍錬金術師（工房跡）』を倒し、大聖堂への道を開け！';
-  } else if (player.ch2Step === 1) {
-    objective = '平原大ボス『🏰 聖堂重騎士（大聖堂）』を撃破し、聖涙川の教会平原を完全制圧せよ！';
-  } else {
-    objective = '聖涙川の教会平原 制圧完了！『🏯 ヴァルハイト城』天守閣制覇や『💀 大霊廟』を極めろ！';
-  }
-
-  return `🗺️【聖涙川の教会平原：進軍地勢案内】
-📍 現在地：${getCurrentLocationName(player)}
-🎯 作戦目標：${objective}
-
-━━━━━━━━━━━━━━━━━━━━━
-🧭【現在地（${cur}）からの進路案内】
-${localAdvice}`;
-}
-
-// ==========================================
-// 5. 地続きノードマップ＆スマート行動選択ボタン生成（★行先選択のみに純化）
+// 4. スマート行動選択ボタン生成（行先選択のみに純化）
 // ==========================================
 function getSmartButtons(player) {
-  // ★すでに行動選択（予約）済みの場合はピコんボタンを出さない（変更時はリッチメニュー「行動変更」から）
   if (player.reservedLocation) {
     return [];
   }
 
-  // ヴァルハイト城潜入中は「次階層へ突撃」か「城外へ脱出」の行先のみ
   if (player.currentLocation === 'ヴァルハイト城' && player.castleFloor > 0) {
     const nextFloorLabel = player.castleFloor === 1
       ? '🏰 内城・第2層へ突撃(HP引継)'
@@ -586,11 +443,7 @@ function getSmartButtons(player) {
   const isCh2 = !isCh3 && (player.chapter >= 2 || player.ch1Step >= 3);
   const cur = player.currentLocation || 'アジト';
 
-  // 地勢ごとの完全独立ルーティング（回復・鍛造・地図等のリッチメニュー重複ボタンは全廃し、行先のみ表示）
   if (isCh3) {
-    // ==========================================
-    // 【覇権の万魔中央回廊】
-    // ==========================================
     if (cur === 'アジト') {
       buttons.push({ label: '🍷 交易区へ進軍(兵糧×2・石)', text: '出撃：中立交易区' });
       buttons.push({ label: '⚒️ 補給工廠へ進軍(板・鋼)', text: '出撃：補給工廠' });
@@ -636,9 +489,6 @@ function getSmartButtons(player) {
     }
 
   } else if (isCh2) {
-    // ==========================================
-    // 【聖涙川の教会平原】
-    // ==========================================
     if (cur === 'アジト') {
       buttons.push({ label: '🌾 農村へ進軍(兵糧×2・鋼)', text: '出撃：農村' });
       buttons.push({ label: '⚒️ 兵站所へ進軍(板・鋼)', text: '出撃：兵站所' });
@@ -689,9 +539,6 @@ function getSmartButtons(player) {
     }
 
   } else {
-    // ==========================================
-    // 【黒鉄の峡谷地帯】
-    // ==========================================
     buttons.push({ label: '⛏️ 渓谷（鋼・板略奪）', text: '出撃：渓谷' });
     buttons.push({ label: '🍞 街道（火薬・兵糧×2）', text: '出撃：街道' });
 
@@ -710,7 +557,6 @@ function getSmartButtons(player) {
     }
   }
 
-  // 前線にいる時は「アジトへ帰還」を行先として追加、アジト滞在中は「アジト強化」を表示
   if (cur !== 'アジト') {
     buttons.push({ label: '⛺ アジトへ帰還(略奪&全快)', text: '出撃：帰還' });
   } else {
@@ -720,7 +566,7 @@ function getSmartButtons(player) {
   return buttons;
 }
 
-// 鍛冶場用のスロット操作ボタン（基本5枠 ＋ 覚醒中は独立第6枠の自由付け替え・解除）
+// 鍛冶場用のスロット操作ボタン
 function getForgeButtons(player) {
   const s = player.slots;
   const total = getTotalSlots(s);
@@ -744,7 +590,6 @@ function getForgeButtons(player) {
     buttons.push({ label: '🔄 5枠すべて外す(初期化)', text: 'スロット：リセット' });
   }
 
-  // ★ 第6スロット覚醒中：独立した6枠目の装着・付け替え・解除ボタン
   if (player.awakenedBoss) {
     if ((player.inventory['王国鋼'] || 0) > 0 && player.sixthSlot !== 'steel') {
       buttons.push({ label: `🔥 6枠目：鋼(残${player.inventory['王国鋼']})`, text: '6枠：鋼' });
@@ -766,7 +611,7 @@ function getForgeButtons(player) {
   return buttons;
 }
 
-// アジト強化ボタン（防壁・武器庫・過負荷炉）
+// アジト強化ボタン
 function getBaseUpgradeButtons(player) {
   const buttons = [];
   const wallLv = player.baseWallLevel || 1;
@@ -799,10 +644,9 @@ function getBaseUpgradeButtons(player) {
 }
 
 // ==========================================
-// 6. 特殊作戦①：ヴァルハイト城（3連撃チキンレースローグ）処理
+// 5. 特殊作戦①：ヴァルハイト城（3連撃チキンレースローグ）処理
 // ==========================================
 async function executeCastleRogueStep(userId, player) {
-  // 別エリア移動扱いとして覚醒中の第6スロットがあれば消滅
   clearAwakenedSixthSlot(player, true);
 
   const castleData = MAP_LOCATIONS['ヴァルハイト城'];
@@ -916,9 +760,8 @@ ${battleData.hint}
 ====================`;
   }
 
-  const latestAll = await loadAllPlayers();
-  latestAll[userId] = player;
-  await saveAllPlayers(latestAll);
+  // ★ 単一プレイヤーのみピンポイント保存
+  await savePlayer(player);
 
   try {
     await lineClient.pushMessage({
@@ -935,10 +778,9 @@ ${battleData.hint}
 }
 
 // ==========================================
-// 7. 特殊作戦②：夜間2地点連続略奪
+// 6. 特殊作戦②：夜間2地点連続略奪
 // ==========================================
 async function executeTwoStepRaid(userId, player, routeStr) {
-  // 別エリア移動扱いとして覚醒中の第6スロットがあれば消滅
   clearAwakenedSixthSlot(player, true);
 
   const [step1Key, step2Key] = routeStr.split('>');
@@ -957,9 +799,7 @@ async function executeTwoStepRaid(userId, player, routeStr) {
     player.hp = 1;
     player.currentLocation = getRetreatLocation(step1Key);
 
-    const latestAll = await loadAllPlayers();
-    latestAll[userId] = player;
-    await saveAllPlayers(latestAll);
+    await savePlayer(player);
 
     const story1 = await generateRaidNarrative(loc1.name, battle1, player, enemy1, 'なし');
     const failMsg =
@@ -998,9 +838,7 @@ ${battle1.hint}
   player.currentLocation = step1Key;
 
   if (loc1.isStopper) {
-    const latestAll = await loadAllPlayers();
-    latestAll[userId] = player;
-    await saveAllPlayers(latestAll);
+    await savePlayer(player);
     const story1 = await generateRaidNarrative(loc1.name, battle1, player, enemy1, loot1Text);
     await lineClient.pushMessage({
       to: userId,
@@ -1066,9 +904,8 @@ ${battle1.hint}
 ${battle2.hint}`;
   }
 
-  const latestAll = await loadAllPlayers();
-  latestAll[userId] = player;
-  await saveAllPlayers(latestAll);
+  // ★ 単一プレイヤーのみピンポイント保存
+  await savePlayer(player);
 
   const story1 = await generateRaidNarrative(loc1.name, battle1, player, enemy1, loot1Text);
   const story2 = await generateRaidNarrative(loc2.name, battle2, player, enemy2, loot2Text);
@@ -1110,7 +947,7 @@ ${step2ResultBlock}
 }
 
 // ==========================================
-// 8. 定時実行＆テスト即時決行エンジン
+// 7. 定時実行＆テスト即時決行エンジン（安全な個別処理ループ）
 // ==========================================
 cron.schedule('0 8,12,20 * * *', async () => {
   console.log('>>> [定時時刻到来] 全小隊の一斉行動を開始...');
@@ -1118,11 +955,27 @@ cron.schedule('0 8,12,20 * * *', async () => {
 });
 
 async function executeScheduledRaids(targetUserId = null, forceDefense = false) {
-  const players = await loadAllPlayers();
-  const userIds = targetUserId ? [targetUserId] : Object.keys(players);
+  let userIds = [];
+  if (targetUserId) {
+    userIds = [targetUserId];
+  } else {
+    const idSet = new Set();
+    if (supabase) {
+      try {
+        const { data, error } = await supabase.from('players').select('line_user_id');
+        if (!error && data) {
+          data.forEach((r) => { if (r.line_user_id) idSet.add(r.line_user_id); });
+        }
+      } catch (err) {
+        console.error('Supabase 定時実行ユーザー一覧取得エラー:', err);
+      }
+    }
+    const localPlayers = loadLocalPlayers();
+    Object.keys(localPlayers).forEach((id) => idSet.add(id));
+    userIds = Array.from(idSet);
+  }
 
   for (const userId of userIds) {
-    if (!players[userId] && !targetUserId) continue;
     const { player } = await getOrCreatePlayer(userId);
 
     if (
@@ -1187,9 +1040,7 @@ ${defEnemy.tauntLog}
 \n${battleData.hint}`;
       }
 
-      const latestAll = await loadAllPlayers();
-      latestAll[userId] = player;
-      await saveAllPlayers(latestAll);
+      await savePlayer(player);
 
       const story = await generateRaidNarrative(`${baseName}（防衛戦）`, battleData, player, defEnemy, lootText);
       const messageText =
@@ -1213,21 +1064,18 @@ ${story}${summaryText}
       continue;
     }
 
-    // ★ 場所移動による第6スロット消滅判定（覚醒対象ボス以外の場所へ移動した場合）
     let movedAwaySlotLostNotice = '';
     if (player.awakenedBoss && locKey !== player.awakenedBoss) {
       clearAwakenedSixthSlot(player, true);
       movedAwaySlotLostNotice = `\n（※場所を移動したため、覚醒していた『第6スロット』は消滅した）`;
     }
 
-    // ★ 今回のボス戦で使用した第6枠の素材を記録（戦闘後に使い捨て消滅＆戦利品判定用）
     const usedSixthSlotKey = (player.awakenedBoss === locKey) ? player.sixthSlot : null;
     const usedSixthInfo = usedSixthSlotKey ? getSlotItemInfo(usedSixthSlotKey) : null;
 
     const enemy = locData.enemies[Math.floor(Math.random() * locData.enemies.length)];
     const battleData = simulateBattle(player, enemy, locKey);
 
-    // ★ 第6枠に入れていた素材は勝っても負けても使い捨てで消滅！
     if (usedSixthSlotKey) {
       player.sixthSlot = null;
     }
@@ -1242,13 +1090,11 @@ ${story}${summaryText}
       let capNotice = '';
       let sixthWinNotice = '';
 
-      // ★ ボスに勝利したら第6枠は消滅
       if (locData.isBoss) {
         player.awakenedBoss = null;
         player.sixthSlot = null;
       }
 
-      // ★ 6枠目に素材を付けて勝った場合は戦利品無し！付けなければ5枠勝利扱いで全戦利品獲得！
       if (locData.isBoss && usedSixthInfo) {
         lootText = `なし（🔥6枠目『${usedSixthInfo.item}』使用のため戦利品なし）`;
         sixthWinNotice = `\n🔥【6枠覚醒突破】6枠目に装填した『${usedSixthInfo.item}』は使い捨てで消滅し、6枠使用の代償として戦利品は無しとなった！（第6スロットは消滅し通常の5枠へ戻った）`;
@@ -1474,12 +1320,10 @@ ${story}${summaryText}
           breakNotice = `\n🛡️【破損回避】防壁と装甲のおかげで、後退時の基本5枠スロット破損は免れた！`;
         }
 
-        // ★ 6枠目の素材を装填して負けた場合の消滅ログ
         if (usedSixthInfo) {
           sixthAwakenNotice += `\n💨【第6枠素材消滅】第6スロットに装填していた『${usedSixthInfo.item}』は使い捨てのため燃え尽きて消滅した！`;
         }
 
-        // ★ ボス敗北時の第6スロット覚醒判定（すでにこのボスに対して覚醒中なら継続、未覚醒なら確率判定）
         if (player.awakenedBoss === locKey) {
           sixthAwakenNotice += `\n🔥【第6スロット覚醒継続中！】『${locData.name}』に挑み続ける限り、第6スロットは継続しているぞ！（他の場所へ移動すると消滅）`;
         } else {
@@ -1507,9 +1351,8 @@ ${story}${summaryText}
 \n${battleData.hint}`;
     }
 
-    const latestAll = await loadAllPlayers();
-    latestAll[userId] = player;
-    await saveAllPlayers(latestAll);
+    // ★ 1人分のみピンポイント保存
+    await savePlayer(player);
 
     const story = await generateRaidNarrative(locData.name, battleData, player, enemy, lootText);
 
@@ -1535,7 +1378,7 @@ ${story}${summaryText}
 }
 
 // ==========================================
-// 9. Web古地図配信エンドポイント（/map）
+// 8. Web古地図配信エンドポイント（/map）
 // ==========================================
 app.get('/map', (req, res) => {
   const mapCh3Path = path.resolve('chapter3_world_map_complete.html');
@@ -1550,7 +1393,7 @@ app.get('/map', (req, res) => {
 });
 
 // ==========================================
-// 10. LINE Webhook ルーティング（リッチメニュー6枠完全連動）
+// 9. LINE Webhook ルーティング（完全独立セーブ連動）
 // ==========================================
 app.post('/webhook', middleware(lineConfig), async (req, res) => {
   res.status(200).end();
@@ -1561,9 +1404,10 @@ app.post('/webhook', middleware(lineConfig), async (req, res) => {
 
     const userText = event.message.text.trim();
     const userId = event.source.userId;
-    let { player, allPlayers } = await getOrCreatePlayer(userId);
+    // ★ 単一プレイヤーのみ取得（他人のデータは読まない）
+    let { player } = await getOrCreatePlayer(userId);
 
-    // A. 開幕・リセット・作戦地図・行動選択（★画像主役・長文テキスト全廃版）
+    // A. 開幕・リセット・作戦地図・行動選択
     if (
       userText === '開幕' ||
       userText === 'リセット' ||
@@ -1574,12 +1418,10 @@ app.post('/webhook', middleware(lineConfig), async (req, res) => {
       userText === 'メニュー'
     ) {
       if (userText === '開幕' || userText === 'リセット') {
-        player = createInitialPlayer(userId);
-        allPlayers[userId] = player;
-        await saveAllPlayers(allPlayers);
+        player = normalizePlayer(createInitialPlayer(userId), userId);
+        await savePlayer(player);
       }
 
-      // ★長文の進路案内やコンディションを全廃し、画面を占有しない極小テキストに限定！
       const curLocName = getCurrentLocationName(player);
       const reservedName = getReservedDisplayName(player.reservedLocation);
       const resNotice = player.reservedLocation ? `（次回予約: 『${reservedName}』）` : '';
@@ -1610,8 +1452,7 @@ app.post('/webhook', middleware(lineConfig), async (req, res) => {
     // B. 予約解除（リッチメニュー「🔄 行動変更」連動）
     } else if (userText === '予約解除') {
       player.reservedLocation = null;
-      allPlayers[userId] = player;
-      await saveAllPlayers(allPlayers);
+      await savePlayer(player);
 
       await lineClient.replyMessage({
         replyToken: event.replyToken,
@@ -1651,8 +1492,7 @@ app.post('/webhook', middleware(lineConfig), async (req, res) => {
         player.castleLoot = [];
         player.reservedLocation = null;
         player.currentLocation = '跳ね橋';
-        allPlayers[userId] = player;
-        await saveAllPlayers(allPlayers);
+        await savePlayer(player);
 
         await lineClient.replyMessage({
           replyToken: event.replyToken,
@@ -1675,12 +1515,11 @@ app.post('/webhook', middleware(lineConfig), async (req, res) => {
       }
 
       player.reservedLocation = '城郭：突撃';
-      allPlayers[userId] = player;
-      await saveAllPlayers(allPlayers);
+      await savePlayer(player);
 
       const nextFloorNum = player.castleFloor + 1;
       const floorInfo = MAP_LOCATIONS['ヴァルハイト城'].castleFloors[nextFloorNum];
-      const enemyNames = (floorInfo.enemies || []).map(e => e.name).join(' / ');
+      const enemyNames = (floorInfo.enemies || []).map((e) => e.name).join(' / ');
 
       await lineClient.replyMessage({
         replyToken: event.replyToken,
@@ -1729,8 +1568,7 @@ app.post('/webhook', middleware(lineConfig), async (req, res) => {
       }
 
       player.reservedLocation = route;
-      allPlayers[userId] = player;
-      await saveAllPlayers(allPlayers);
+      await savePlayer(player);
 
       const loseSlotWarn = player.awakenedBoss
         ? `\n⚠️【注意】現在『${MAP_LOCATIONS[player.awakenedBoss]?.name || player.awakenedBoss}』に対して第6スロットが覚醒中だ！別の場所へ移動すると第6スロットは消滅するぞ！`
@@ -1772,8 +1610,7 @@ app.post('/webhook', middleware(lineConfig), async (req, res) => {
           return;
         }
         player.reservedLocation = '帰還';
-        allPlayers[userId] = player;
-        await saveAllPlayers(allPlayers);
+        await savePlayer(player);
 
         const loseSlotWarn = player.awakenedBoss
           ? `\n⚠️【注意】本陣へ帰還すると、現在覚醒中の『第6スロット』は消滅するぞ！`
@@ -1840,8 +1677,7 @@ app.post('/webhook', middleware(lineConfig), async (req, res) => {
 
           player.inventory['装甲板'] -= cost;
           player.baseWallLevel = lv + 1;
-          allPlayers[userId] = player;
-          await saveAllPlayers(allPlayers);
+          await savePlayer(player);
 
           const newBreakRate = (getBossBreakRate(player) * 100).toFixed(0);
           await lineClient.replyMessage({
@@ -1886,8 +1722,7 @@ app.post('/webhook', middleware(lineConfig), async (req, res) => {
 
           player.inventory['王国鋼'] -= cost;
           player.baseArmoryLevel = lv + 1;
-          allPlayers[userId] = player;
-          await saveAllPlayers(allPlayers);
+          await savePlayer(player);
 
           await lineClient.replyMessage({
             replyToken: event.replyToken,
@@ -1931,8 +1766,7 @@ app.post('/webhook', middleware(lineConfig), async (req, res) => {
 
           player.inventory['黒火薬'] -= cost;
           player.baseFurnaceLevel = lv + 1;
-          allPlayers[userId] = player;
-          await saveAllPlayers(allPlayers);
+          await savePlayer(player);
 
           const newAwakenRate = (getOverloadAwakenRate(player) * 100).toFixed(0);
           await lineClient.replyMessage({
@@ -1989,7 +1823,7 @@ app.post('/webhook', middleware(lineConfig), async (req, res) => {
       });
 
     // D. 出撃予約（単一ノード進軍）
-    } else if (userText.startsWith('出撃：') || userText.includes('白銀城塞') || Object.keys(MAP_LOCATIONS).some(k => userText.includes(k))) {
+    } else if (userText.startsWith('出撃：') || userText.includes('白銀城塞') || Object.keys(MAP_LOCATIONS).some((k) => userText.includes(k))) {
       let matchedKey = null;
       if (userText.includes('白銀城塞')) {
         matchedKey = 'ヴァルハイト城';
@@ -2069,8 +1903,7 @@ app.post('/webhook', middleware(lineConfig), async (req, res) => {
       }
 
       player.reservedLocation = matchedKey;
-      allPlayers[userId] = player;
-      await saveAllPlayers(allPlayers);
+      await savePlayer(player);
 
       let breakRiskNote = '';
       if (loc.isCastleRogue) {
@@ -2102,7 +1935,7 @@ app.post('/webhook', middleware(lineConfig), async (req, res) => {
         }],
       });
 
-    // E. テスト即時決行 ＆ テスト防衛戦（リッチメニュー「⚡ 即時決行」連動）
+    // E. テスト即時決行 ＆ テスト防衛戦
     } else if (userText.includes('即時決行') || userText.includes('テスト防衛戦')) {
       const isDef = userText.includes('テスト防衛戦');
       await lineClient.replyMessage({
@@ -2116,7 +1949,7 @@ app.post('/webhook', middleware(lineConfig), async (req, res) => {
       });
       await executeScheduledRaids(userId, isDef);
 
-    // F. 鍛冶場・キメラ武器改造（リッチメニュー「🔨 武器鍛造」連動：基本5枠＋独立第6枠）
+    // F. 鍛冶場・キメラ武器改造
     } else if (userText.includes('鍛造') || userText.includes('鍛冶') || userText.includes('改造') || userText.includes('武器')) {
       const s = player.slots;
       const total = getTotalSlots(s);
@@ -2163,7 +1996,7 @@ HP: ${player.hp}/${stats.maxHp} | 攻撃: ${stats.atk} | 防御: ${stats.def}
         }],
       });
 
-    // G-0. 独立第6スロット操作（覚醒中のみ・自由付け替え＆解除）
+    // G-0. 独立第6スロット操作
     } else if (userText.startsWith('6枠：')) {
       if (!player.awakenedBoss) {
         await lineClient.replyMessage({
@@ -2189,8 +2022,7 @@ HP: ${player.hp}/${stats.maxHp} | 攻撃: ${stats.atk} | 防御: ${stats.def}
         }
         const stats = calculateEffectiveStats(player);
         if (player.hp > stats.maxHp) player.hp = stats.maxHp;
-        allPlayers[userId] = player;
-        await saveAllPlayers(allPlayers);
+        await savePlayer(player);
 
         await lineClient.replyMessage({
           replyToken: event.replyToken,
@@ -2228,7 +2060,6 @@ HP: ${player.hp}/${stats.maxHp} | 攻撃: ${stats.atk} | 防御: ${stats.def} | 
         return;
       }
 
-      // すでに別の素材が6枠目に入っていた場合は手持ちに返却して付け替える
       if (player.sixthSlot) {
         const prevInfo = getSlotItemInfo(player.sixthSlot);
         if (prevInfo) {
@@ -2241,8 +2072,7 @@ HP: ${player.hp}/${stats.maxHp} | 攻撃: ${stats.atk} | 防御: ${stats.def} | 
       const newStats = calculateEffectiveStats(player);
       if (player.hp > newStats.maxHp) player.hp = newStats.maxHp;
 
-      allPlayers[userId] = player;
-      await saveAllPlayers(allPlayers);
+      await savePlayer(player);
 
       await lineClient.replyMessage({
         replyToken: event.replyToken,
@@ -2271,8 +2101,7 @@ HP: ${player.hp}/${newStats.maxHp} | 攻撃: ${newStats.atk} | 防御: ${newStat
         player.inventory['黒火薬'] = (player.inventory['黒火薬'] || 0) + (s.powder || 0);
         player.inventory['魔導石'] = (player.inventory['魔導石'] || 0) + (s.stone || 0);
         player.slots = { steel: 0, plate: 0, powder: 0, stone: 0 };
-        allPlayers[userId] = player;
-        await saveAllPlayers(allPlayers);
+        await savePlayer(player);
 
         const stats = calculateEffectiveStats(player);
         await lineClient.replyMessage({
@@ -2328,8 +2157,7 @@ HP: ${player.hp}/${newStats.maxHp} | 攻撃: ${newStats.atk} | 防御: ${newStat
       const newStats = calculateEffectiveStats(player);
       if (player.hp > newStats.maxHp) player.hp = newStats.maxHp;
 
-      allPlayers[userId] = player;
-      await saveAllPlayers(allPlayers);
+      await savePlayer(player);
 
       const newTotal = getTotalSlots(player.slots);
       const sixthNote = player.awakenedBoss
@@ -2353,7 +2181,7 @@ ${newTotal < 5 ? '▼ 続けて残りの枠を込めろ。' : '✅ 5枠すべて
         }],
       });
 
-    // H. 回復・兵糧（リッチメニュー「🍖 兵糧回復」連動）
+    // H. 回復・兵糧
     } else if (userText.includes('回復') || userText.includes('兵糧') || userText.includes('兵舎') || userText.includes('飯') || userText.includes('補給')) {
       if (player.currentLocation === 'ヴァルハイト城' && player.castleFloor > 0) {
         await lineClient.replyMessage({
@@ -2396,8 +2224,7 @@ ${newTotal < 5 ? '▼ 続けて残りの枠を込めろ。' : '✅ 5枠すべて
 
       player.inventory['兵糧'] -= 1;
       player.hp = stats.maxHp;
-      allPlayers[userId] = player;
-      await saveAllPlayers(allPlayers);
+      await savePlayer(player);
 
       const notice = player.reservedLocation ? `\n（※次回予約：『${getReservedDisplayName(player.reservedLocation)}』）` : '';
       await lineClient.replyMessage({
@@ -2409,7 +2236,7 @@ ${newTotal < 5 ? '▼ 続けて残りの枠を込めろ。' : '✅ 5枠すべて
         }],
       });
 
-    // I. ステータス・陣況確認（リッチメニュー「📋 陣況確認」連動）
+    // I. ステータス・陣況確認
     } else if (userText.includes('ステータス') || userText.includes('確認') || userText.includes('陣況') || userText.includes('状況')) {
       const stats = calculateEffectiveStats(player);
       const s = player.slots;
@@ -2474,7 +2301,7 @@ ${player.weapon} [${total}/5枠]
         }],
       });
 
-    // ★ 開発テスト用裏ワザ：素材マックス補充（他機能に一切干渉しない独立ブロック）
+    // ★ 開発テスト用裏ワザ：素材マックス補充
     } else if (userText === '素材マックス' || userText === '素材MAX' || userText === '裏ワザ') {
       const maxMat = Math.max(getMaterialCap(player), 15);
       const maxRat = Math.max(getRationCap(player), 30);
@@ -2483,8 +2310,7 @@ ${player.weapon} [${total}/5枠]
       player.inventory['黒火薬'] = maxMat;
       player.inventory['魔導石'] = maxMat;
       player.inventory['兵糧'] = maxRat;
-      allPlayers[userId] = player;
-      await saveAllPlayers(allPlayers);
+      await savePlayer(player);
 
       await lineClient.replyMessage({
         replyToken: event.replyToken,
