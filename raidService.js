@@ -35,11 +35,6 @@ export async function executeCastleRogueStep(lineClient, userId, player) {
   const battleData = simulateBattle(player, enemy, 'ヴァルハイト城');
   player.reservedLocation = null;
 
-  const quoteHeader = enemy.quote ? `🗣️ ${enemy.name}：\n${enemy.quote}\n\n` : '';
-  const defeatFooter = (battleData.result === 'WIN' && enemy.defeatQuote)
-    ? `\n💬 撃破時の断末魔：\n${enemy.defeatQuote}\n`
-    : '';
-
   let story = '';
   let messageText = '';
 
@@ -54,27 +49,34 @@ export async function executeCastleRogueStep(lineClient, userId, player) {
     const floorLootText = formatLootList(combinedFloorLoot);
     const totalBagText = formatLootList(player.castleLoot);
 
-    story = await generateRaidNarrative(`ヴァルハイト城・${floorInfo.floorName}`, battleData, player, enemy, floorLootText);
+    story = await generateRaidNarrative(
+      `ヴァルハイト城・${floorInfo.floorName}`,
+      battleData,
+      player,
+      enemy,
+      floorLootText,
+      {
+        locDesc: castleData.desc,
+        sceneType: 'CASTLE',
+      }
+    );
 
     if (nextFloorNum < 3) {
       player.castleFloor = nextFloorNum;
       const nextFloorTitle = castleData.castleFloors[nextFloorNum + 1].floorName;
 
       messageText =
-`🏯【ヴァルハイト城・${floorInfo.floorName} 突破！！】
-${quoteHeader}${story}${defeatFooter}
-====================
-🔥【城郭強襲チキンレース：現在 第${nextFloorNum}層制圧】
-・撃破した敵: ${enemy.name}
-・今回奪った物資: ${floorLootText}
-・🎒 城内戦利品袋（未確定）: 【 ${totalBagText} 】
-・部隊残HP: ${player.hp}/${battleData.stats.maxHp}（※城内での兵糧回復は不可！）
+`🏯【城郭強襲戦記：${floorInfo.floorName}】
 
+${story}
+
+━━━━━━━━━━━━━━━━━━
+📍 現在地：ヴァルハイト城（第${nextFloorNum}層制圧）
+❤️ 部隊HP：${player.hp} / ${battleData.stats.maxHp}（※城内での兵糧回復は不可）
+🎒 戦利品袋（未確定）：${totalBagText}
+━━━━━━━━━━━━━━━━━━
 ⚠️【決断の時】
-ここで『⛺ 戦利品を持って城外へ脱出』すれば袋の物資は100%持ち帰れる！
-だが、残HPのまま『${nextFloorTitle}』へ突撃して敗北すれば、袋の戦利品は【すべて全没収】となる！
-行くか、引くか！？下のボタンで決断しろ！
-====================`;
+ここで『⛺ 城外へ脱出』すれば袋の物資はすべて持ち帰れるが、残HPのまま『${nextFloorTitle}』へ突撃して敗れれば袋は【全没収】となる。行くか、引くか！？`;
     } else {
       player.bossWins['ヴァルハイト城'] = (player.bossWins['ヴァルハイト城'] || 0) + 1;
 
@@ -86,7 +88,7 @@ ${quoteHeader}${story}${defeatFooter}
         if (res.capped) anyCapped = true;
       }
       const finalSecuredText = formatLootList(addedResults);
-      const capWarn = anyCapped ? `\n（※一部素材が武器庫の保管上限に達した！アジトで武器庫を拡張しろ！）` : '';
+      const capWarn = anyCapped ? `（※一部物資は武器庫上限のため破棄）` : '';
 
       player.castleFloor = 0;
       player.castleLoot = [];
@@ -94,23 +96,20 @@ ${quoteHeader}${story}${defeatFooter}
       player.hp = battleData.stats.maxHp;
 
       messageText =
-`👑【ヴァルハイト城・天守閣完全制覇！！】
-${quoteHeader}${story}${defeatFooter}
-====================
-🏯【3連撃チキンレース完全勝利：城内宝物庫を根こそぎ強奪！！】
-外郭・内城・天守閣の3連戦を勝ち抜き、最深部を守護していた『${enemy.name}』を叩き潰して城内の全資材を本陣へ持ち帰った！
+`👑【城郭強襲戦記：ヴァルハイト城・天守閣完全制覇】
+
+${story}
 
 📡【魔王城・緊急傍受】貴族魔族派の魔軍卿：
-『な、なんだと！？ 聖涙川の教会平原が誇る真実の城・ヴァルハイト城が、ガルガン軍の野良犬小隊に天守まで荒らされて丸裸にされただと！？ 我ら名門の立場はどうなるのだ！！』
-
+「な、なんだと！？ 聖涙川の教会平原が誇るヴァルハイト城が、ガルガン軍の野良犬小隊に天守まで荒らされて丸裸にされただと！？」
 🔥 魔軍卿 ガルガン：
-『ガハハハ！！ 天守閣のてっぺんまで綺麗にぶんどってきやがったなシンジ班！ 偽善者どもの泣きっ面が最高に愉快だぜ！！』
+「ガハハハ！！ 天守閣のてっぺんまで綺麗にぶんどってきやがったなシンジ班！ 偽善者どもの泣きっ面が最高に愉快だぜ！！」
 
-・確定持ち帰り戦利品: ${finalSecuredText}${capWarn}
-・現在地: ${getCurrentLocationName(player)}（凱旋HP100%全快！）
-====================
-
-▼ 下のボタンから次回の行動を選べ。`;
+━━━━━━━━━━━━━━━━━━
+📍 現在地：${getCurrentLocationName(player)}
+❤️ 部隊HP：${player.hp} / ${battleData.stats.maxHp}（凱旋100%全快！）
+🎒 確定戦利品：${finalSecuredText}${capWarn}
+━━━━━━━━━━━━━━━━━━`;
     }
   } else {
     const lostBagText = formatLootList(player.castleLoot);
@@ -119,22 +118,31 @@ ${quoteHeader}${story}${defeatFooter}
     player.hp = 1;
     player.currentLocation = getRetreatLocation('ヴァルハイト城');
 
-    story = await generateRaidNarrative(`ヴァルハイト城・${floorInfo.floorName}`, battleData, player, enemy, '全没収');
+    story = await generateRaidNarrative(
+      `ヴァルハイト城・${floorInfo.floorName}`,
+      battleData,
+      player,
+      enemy,
+      '全没収',
+      {
+        locDesc: castleData.desc,
+        sceneType: 'CASTLE',
+      }
+    );
 
     messageText =
-`💀【ヴァルハイト城・強襲失敗（戦利品袋 全没収）】
-${quoteHeader}${story}
+`💀【城郭強襲戦記：${floorInfo.floorName}・敗走】
 
-====================
-💥【欲をかいた代償：城内戦利品ロスト＆跳ね橋へ後退】
-『${floorInfo.floorName}』の『${enemy.name}』に押し潰され、城内でかき集めていた戦利品袋【 ${lostBagText} 】をすべて投げ捨てて城門前の『🌉 ヴァルハイト跳ね橋』まで退却した……！
-（※キメラ武器の装着スロット素材は破損せず無傷！）
+${story}
 
-・現在地: ${getCurrentLocationName(player)}（1歩後退で踏みとどまった！）
-・部隊残HP: 1/${battleData.stats.maxHp}（要回復！）
-🔥 リッチメニューの「🍖 兵糧回復」で傷を癒やし、すぐ目の前のヴァルハイト城へ再突撃できるぞ！
+💥 城内でかき集めていた戦利品袋【 ${lostBagText} 】はすべて散逸したが、キメラ武器のスロットは無傷のまま城門前の『🌉 ヴァルハイト跳ね橋』へ踏みとどまった！
 ${battleData.hint}
-====================`;
+
+━━━━━━━━━━━━━━━━━━
+📍 現在地：${getCurrentLocationName(player)}（1歩後退）
+❤️ 部隊HP：1 / ${battleData.stats.maxHp}（要「🍖 兵糧回復」）
+🎒 戦利品：全没収
+━━━━━━━━━━━━━━━━━━`;
   }
 
   await savePlayer(player);
@@ -177,18 +185,23 @@ export async function executeTwoStepRaid(lineClient, userId, player, routeStr) {
 
     await savePlayer(player);
 
-    const story1 = await generateRaidNarrative(loc1.name, battle1, player, enemy1, 'なし');
+    const story1 = await generateRaidNarrative(loc1.name, battle1, player, enemy1, 'なし', {
+      locDesc: loc1.desc,
+      sceneType: 'RAID',
+    });
+
     const failMsg =
-`🌙【夜間2地点遠征・第1地点で敗退】
+`🌙【夜間連続遠征記：${loc1.name}にて中断】
+
 ${story1}
 
-====================
-【遠征中断：${loc1.name}にて後退】
-第1地点『${loc1.name}』の突破に失敗したため、第2地点『${loc2.name}』へ進めず後退した。
-・現在地: ${getCurrentLocationName(player)}
-・部隊残HP: 1/${battle1.stats.maxHp}
 ${battle1.hint}
-====================`;
+
+━━━━━━━━━━━━━━━━━━
+📍 現在地：${getCurrentLocationName(player)}（第1地点より後退）
+❤️ 部隊HP：1 / ${battle1.stats.maxHp}（要回復）
+🎒 戦利品：なし
+━━━━━━━━━━━━━━━━━━`;
 
     await lineClient.pushMessage({
       to: userId,
@@ -202,25 +215,45 @@ ${battle1.hint}
   }
 
   let loot1Text = 'なし';
-  let cap1Notice = '';
+  let isCap1 = false;
+  let rawDrop1 = '';
   const iconMap = { '王国鋼': '⛏️', '装甲板': '🛡️', '黒火薬': '🧨', '魔導石': '🔮', '兵糧': '🍞' };
 
   if (loc1.possibleLoot && loc1.possibleLoot.length > 0) {
     const drop1 = loc1.possibleLoot[Math.floor(Math.random() * loc1.possibleLoot.length)];
+    rawDrop1 = drop1.item;
     const add1 = addLootWithCap(player, drop1.item, drop1.count);
-    loot1Text = `${iconMap[drop1.item] || '🎁'}${drop1.item} ×${add1.added}`;
-    if (add1.capped) cap1Notice = `（※${drop1.item}上限到達）`;
+    isCap1 = add1.capped;
+    if (add1.added > 0) {
+      loot1Text = `${iconMap[drop1.item] || '🎁'}${drop1.item}×${add1.added}${add1.capped ? '(上限到達)' : ''}`;
+    } else {
+      loot1Text = `${iconMap[drop1.item] || '🎁'}${drop1.item}（⚠️武器庫満杯のため破棄）`;
+    }
   }
   player.currentLocation = step1Key;
 
   if (loc1.isStopper) {
     await savePlayer(player);
-    const story1 = await generateRaidNarrative(loc1.name, battle1, player, enemy1, loot1Text);
+    const story1 = await generateRaidNarrative(loc1.name, battle1, player, enemy1, loot1Text, {
+      locDesc: loc1.desc,
+      sceneType: 'RAID',
+      isCapped: isCap1 && loot1Text.includes('破棄'),
+      rawDropName: rawDrop1,
+    });
     await lineClient.pushMessage({
       to: userId,
       messages: [{
         type: 'text',
-        text: `🌙【遠征報告：重要拠点『${loc1.name}』で停止】\n${story1}\n\n・強奪品: ${loot1Text}\n・現在地: ${getCurrentLocationName(player)}`,
+        text:
+`🌙【夜間遠征記：重要拠点『${loc1.name}』制圧】
+
+${story1}
+
+━━━━━━━━━━━━━━━━━━
+📍 現在地：${getCurrentLocationName(player)}
+❤️ 部隊HP：${player.hp} / ${battle1.stats.maxHp}
+🎒 戦利品：${loot1Text}
+━━━━━━━━━━━━━━━━━━`,
         quickReply: makeQuickReply(getSmartButtons(player)),
       }],
     });
@@ -233,12 +266,12 @@ ${battle1.hint}
     if ((player.inventory['兵糧'] || 0) > 0) {
       player.inventory['兵糧'] -= 1;
       player.hp = stats.maxHp;
-      autoHealLog = `🍖【進軍野営・自動兵糧補給】第2地点への突撃前、手持ちの兵糧1袋を消費して部隊HPを100%全快（${player.hp}/${stats.maxHp}）した！（残り兵糧: ${player.inventory['兵糧']}袋）`;
+      autoHealLog = `🍖【幕間野営】焚き火を囲んで兵糧1袋を平らげ、部隊HPを100%全快（${player.hp}/${stats.maxHp}）して第2戦へ突入！（残兵糧:${player.inventory['兵糧']}袋）`;
     } else {
-      autoHealLog = `⚠️【兵糧枯渇】手持ちの兵糧が0袋のため、残HP（${player.hp}/${stats.maxHp}）のまま第2地点『${loc2.name}』へ強行突入した！`;
+      autoHealLog = `⚠️【兵糧枯渇】手持ちの兵糧が0袋のため、傷を抱えたまま（HP:${player.hp}/${stats.maxHp}）第2地点『${loc2.name}』へ強行突入！`;
     }
   } else {
-    autoHealLog = `✨【無傷突破】部隊HPは満タン（${player.hp}/${stats.maxHp}）のまま第2地点『${loc2.name}』へ突入！`;
+    autoHealLog = `✨【無傷進軍】かすり傷一つ負わぬまま（HP:${player.hp}/${stats.maxHp}）、勢いに乗って第2地点『${loc2.name}』へ突入！`;
   }
 
   const enemy2 = loc2.enemies[Math.floor(Math.random() * loc2.enemies.length)];
@@ -246,66 +279,66 @@ ${battle1.hint}
   player.hp = battle2.finalPlayerHp;
 
   let loot2Text = 'なし';
-  let cap2Notice = '';
-  let step2ResultBlock = '';
+  let isCap2 = false;
+  let rawDrop2 = '';
+  let step2Extra = '';
 
   if (battle2.result === 'WIN') {
     if (loc2.possibleLoot && loc2.possibleLoot.length > 0) {
       const drop2 = loc2.possibleLoot[Math.floor(Math.random() * loc2.possibleLoot.length)];
+      rawDrop2 = drop2.item;
       const add2 = addLootWithCap(player, drop2.item, drop2.count);
-      loot2Text = `${iconMap[drop2.item] || '🎁'}${drop2.item} ×${add2.added}`;
-      if (add2.capped) cap2Notice = `（※${drop2.item}上限到達）`;
+      isCap2 = add2.capped;
+      if (add2.added > 0) {
+        loot2Text = `${iconMap[drop2.item] || '🎁'}${drop2.item}×${add2.added}${add2.capped ? '(上限到達)' : ''}`;
+      } else {
+        loot2Text = `${iconMap[drop2.item] || '🎁'}${drop2.item}（⚠️武器庫満杯のため破棄）`;
+      }
     }
     player.currentLocation = step2Key;
 
-    let drawbridgeHype = '';
     if (loc2.isDrawbridge) {
-      drawbridgeHype =
-`\n\n🔥【決戦前夜：ヴァルハイト跳ね橋を落としたぞ！！】
-警備隊を血祭りにあげ、跳ね橋を吊っていた極太の鉄鎖をキメラ斧で両断した！
-轟音とともに巨大な跳ね橋が落ち、深い堀の向こうに【🏯 ヴァルハイト城】の大城門が口を開けた！
-魔軍卿ガルガン：『ガハハハ！橋は落ちたぞ！ここから先は天守への殴り込みだ！覚悟を決めて突っ込めシンジ班！！』`;
+      step2Extra = `\n\n🔥 魔軍卿 ガルガン：\n「ガハハハ！ 跳ね橋の鉄鎖をぶっ千切ったな！ 目の前に口を開けた『🏯 ヴァルハイト城』へそのまま殴り込めシンジ班！！」`;
     }
-
-    step2ResultBlock =
-`✅【第2戦：${loc2.name}（勝利！）】
-・撃破: ${enemy2.name}（${battle2.lastTurn}T制圧）
-・強奪品: ${loot2Text}${cap2Notice}${drawbridgeHype}`;
   } else {
     player.hp = 1;
     player.currentLocation = step1Key;
-    step2ResultBlock =
-`❌【第2戦：${loc2.name}（1歩後退…）】
-・交戦: ${enemy2.name}に阻まれたが、本陣までは戻らず第1地点『${loc1.name}』に踏みとどまった！（※第1戦の戦利品『${loot1Text}』は無事確保！）
-${battle2.hint}`;
+    loot2Text = 'なし（第1地点へ1歩後退）';
+    step2Extra = `\n\n${battle2.hint}`;
   }
 
   await savePlayer(player);
 
-  const story1 = await generateRaidNarrative(loc1.name, battle1, player, enemy1, loot1Text);
-  const story2 = await generateRaidNarrative(loc2.name, battle2, player, enemy2, loot2Text);
+  const story1 = await generateRaidNarrative(loc1.name, battle1, player, enemy1, loot1Text, {
+    locDesc: loc1.desc,
+    sceneType: 'TWO_STEP',
+    isCapped: isCap1 && loot1Text.includes('破棄'),
+    rawDropName: rawDrop1,
+  });
+  const story2 = await generateRaidNarrative(loc2.name, battle2, player, enemy2, loot2Text, {
+    locDesc: loc2.desc,
+    sceneType: 'TWO_STEP',
+    isCapped: isCap2 && loot2Text.includes('破棄'),
+    rawDropName: rawDrop2,
+  });
 
   const combinedMessage =
-`🌙【夜間2地点連続略奪・統合報告】
-━━━━━━━━━━━━━━
-⚔️ 第1襲撃地：${loc1.name}
+`🌙【夜間連続遠征記：${loc1.name} ➔ ${loc2.name}】
+
+⚔️《第1幕：${loc1.name}》
 ${story1}
 
-✅【第1戦：${loc1.name}（勝利！）】
-・撃破: ${enemy1.name}（${battle1.lastTurn}T制圧）
-・強奪品: ${loot1Text}${cap1Notice}
-━━━━━━━━━━━━━━
 ${autoHealLog}
-━━━━━━━━━━━━━━
-⚔️ 第2襲撃地：${loc2.name}
-${story2}
 
-${step2ResultBlock}
-━━━━━━━━━━━━━━
-📍 現在地: ${getCurrentLocationName(player)}
-❤️ 部隊残HP: ${player.hp}/${stats.maxHp}
+⚔️《第2幕：${loc2.name}》
+${story2}${step2Extra}
 
-▼ 次回の行動を下のボタンから予約しろ。`;
+━━━━━━━━━━━━━━━━━━
+📍 現在地：${getCurrentLocationName(player)}
+❤️ 部隊HP：${player.hp} / ${stats.maxHp}
+🎒 第1戦果：${loot1Text}
+🎒 第2戦果：${loot2Text}
+━━━━━━━━━━━━━━━━━━`;
 
   try {
     await lineClient.pushMessage({
@@ -356,6 +389,9 @@ export async function executeScheduledRaids(lineClient, targetUserId = null, for
 
     const triggerDefense = forceDefense || (!locData.isBoss && !locData.isStopper && Math.random() < 0.15);
 
+    // ----------------------------------------------------
+    // A. 突発イベント：本陣アジト奇襲防衛戦
+    // ----------------------------------------------------
     if (triggerDefense) {
       const defEnemy = DEFENSE_ENEMIES[Math.floor(Math.random() * DEFENSE_ENEMIES.length)];
       const baseName = getBaseName(player);
@@ -365,41 +401,42 @@ export async function executeScheduledRaids(lineClient, targetUserId = null, for
       player.currentLocation = 'アジト';
 
       let lootText = 'なし';
-      let summaryText = '';
+      let interludeText = '';
 
       if (battleData.result === 'WIN') {
         player.hp = battleData.stats.maxHp;
         const r1 = addLootWithCap(player, '王国鋼', 1);
         const r2 = addLootWithCap(player, '装甲板', 1);
         const r3 = addLootWithCap(player, '兵糧', 2);
-        lootText = `⛏️王国鋼×${r1.added} / 🛡️装甲板×${r2.added} / 🍞兵糧×${r3.added}`;
+        const parts = [];
+        if (r1.added > 0) parts.push(`⛏️王国鋼×${r1.added}`);
+        if (r2.added > 0) parts.push(`🛡️装甲板×${r2.added}`);
+        if (r3.added > 0) parts.push(`🍞兵糧×${r3.added}`);
+        lootText = parts.length > 0 ? parts.join(' / ') : '⚠️武器庫満杯のため全破棄';
 
-        summaryText =
-`\n\n====================
-🛡️【突発イベント：アジト奇襲防衛に大勝利！！】
-${baseName}へ攻め込んできた『${defEnemy.name}』を迎撃杭とキメラ武器で返り討ちにし、連中の軍事物資を丸ごと剥ぎ取ってやった！
-${defEnemy.tauntLog}
-
-・強奪戦利品: ${lootText}
-・本陣凱旋ボーナス: 部隊HPが100%全快！（${player.hp}/${battleData.stats.maxHp}）
-・現在地: ${getCurrentLocationName(player)}
-====================`;
+        interludeText = `\n\n${defEnemy.tauntLog}`;
       } else {
         player.hp = 1;
-        summaryText =
-`\n\n【アジト防衛失敗：被害発生】
-奇襲部隊に押し込まれ、部隊は重傷を負った！（残HP: 1/${battleData.stats.maxHp}）
-\n${battleData.hint}`;
+        interludeText = `\n\n${battleData.hint}`;
       }
 
       await savePlayer(player);
 
-      const story = await generateRaidNarrative(`${baseName}（防衛戦）`, battleData, player, defEnemy, lootText);
-      const messageText =
-`🚨【緊急迎撃報告：${baseName}防衛戦】
-${story}${summaryText}
+      const story = await generateRaidNarrative(`${baseName}`, battleData, player, defEnemy, lootText, {
+        locDesc: `シンジ班の本陣『${baseName}』への敵奇襲部隊による強襲`,
+        sceneType: 'DEFENSE',
+      });
 
-▼ 現在アジトに滞在中だ。次回の出撃先またはアジト強化を選べ。`;
+      const messageText =
+`🚨【緊急迎撃戦記：${baseName}防衛戦】
+
+${story}${interludeText}
+
+━━━━━━━━━━━━━━━━━━
+📍 現在地：${getCurrentLocationName(player)}
+❤️ 部隊HP：${player.hp} / ${battleData.stats.maxHp}${battleData.result === 'WIN' ? '（本陣全快！）' : '（重傷・要回復）'}
+🎒 鹵獲物資：${lootText}
+━━━━━━━━━━━━━━━━━━`;
 
       try {
         await lineClient.pushMessage({
@@ -416,10 +453,13 @@ ${story}${summaryText}
       continue;
     }
 
+    // ----------------------------------------------------
+    // B. 通常略奪 ＆ 関門ボス戦 ＆ 帰還戦
+    // ----------------------------------------------------
     let movedAwaySlotLostNotice = '';
     if (player.awakenedBoss && locKey !== player.awakenedBoss) {
       clearAwakenedSixthSlot(player, true);
-      movedAwaySlotLostNotice = `\n（※場所を移動したため、覚醒していた『第6スロット』は消滅した）`;
+      movedAwaySlotLostNotice = `\n（※別エリアへ移動したため、覚醒していた『第6スロット』は消滅した）`;
     }
 
     const usedSixthSlotKey = (player.awakenedBoss === locKey) ? player.sixthSlot : null;
@@ -436,20 +476,18 @@ ${story}${summaryText}
     player.reservedLocation = null;
 
     let lootText = 'なし';
-    let summaryText = '';
+    let isCapped = false;
+    let rawDropName = '';
+    let interludeText = '';
 
     if (battleData.result === 'WIN') {
-      let capNotice = '';
-      let sixthWinNotice = '';
-
       if (locData.isBoss) {
         player.awakenedBoss = null;
         player.sixthSlot = null;
       }
 
       if (locData.isBoss && usedSixthInfo) {
-        lootText = `なし（🔥6枠目『${usedSixthInfo.item}』使用のため戦利品なし）`;
-        sixthWinNotice = `\n🔥【6枠覚醒突破】6枠目に装填した『${usedSixthInfo.item}』は使い捨てで消滅し、6枠使用の代償として戦利品は無しとなった！（第6スロットは消滅し通常の5枠へ戻った）`;
+        lootText = `なし（🔥第6枠『${usedSixthInfo.item}』燃焼の代償）`;
       } else if (locData.isChallenge) {
         const rSteel = addLootWithCap(player, '王国鋼', 1);
         const rPlate = addLootWithCap(player, '装甲板', 1);
@@ -458,64 +496,37 @@ ${story}${summaryText}
         lootText = `⛏️鋼×${rSteel.added} / 🛡️板×${rPlate.added} / 🧨火×${rPowder.added} / 🔮石×${rStone.added}`;
       } else if (locData.possibleLoot && locData.possibleLoot.length > 0) {
         const dropObj = locData.possibleLoot[Math.floor(Math.random() * locData.possibleLoot.length)];
+        rawDropName = dropObj.item;
         const addRes = addLootWithCap(player, dropObj.item, dropObj.count);
+        isCapped = addRes.capped;
         const iconMap = { '王国鋼': '⛏️', '装甲板': '🛡️', '黒火薬': '🧨', '魔導石': '🔮', '兵糧': '🍞' };
         const icon = iconMap[dropObj.item] || '🎁';
-        lootText = `${icon}${dropObj.item} ×${addRes.added}`;
-        if (addRes.capped) {
-          capNotice = `\n（※『${dropObj.item}』が保管上限[${addRes.cap}個]に達した！アジトで『武器庫』を拡張しろ！）`;
+
+        if (addRes.added > 0) {
+          lootText = `${icon}${dropObj.item} ×${addRes.added}${addRes.capped ? `（⚠️上限${addRes.cap}個に到達）` : ''}`;
+        } else {
+          lootText = `${icon}${dropObj.item}（⚠️武器庫満杯[上限${addRes.cap}個]のため破棄 ➔ アジトで拡張せよ）`;
         }
       }
 
+      // 勝利時の幕間劇（通信傍受・進行フラグ更新）
       if (locData.isChallenge) {
         player.bossWins[locKey] = (player.bossWins[locKey] || 0) + 1;
         player.currentLocation = '礼拝堂';
-
-        summaryText =
-`\n\n====================
-💀【チャレンジ完全制覇：対魔神聖巨像を粉砕！！】
-人間教会が地下最深部に秘匿していた『対魔神聖巨像アークエンゼル』を解体・スクラップにし、組み込まれていた最高級の全資材をごっそり強奪した！
-
-📡【魔王城・緊急傍受】エリート魔道派の魔軍卿：
-『な……何だと！？ 教会が我が魔王軍を殲滅すべく極秘建造していた神聖決戦巨像を、あのような野良のチンピラどもが単独でスクラップにしただと！？ 計算が合わん……あり得ん！！』
-
-・強奪戦利品: ${lootText}${sixthWinNotice}
-・現在地: ${getCurrentLocationName(player)}
-・部隊残HP: ${player.hp}/${battleData.stats.maxHp}
-====================`;
+        interludeText =
+`\n\n📡【魔王城・緊急傍受】エリート魔道派の魔軍卿：
+「な……何だと！？ 教会が極秘建造していた対魔神聖巨像アークエンゼルを、ガルガンの野良犬どもが単独でスクラップにしただと！？ 計算が合わん……あり得ん！！」`;
 
       } else if (locData.isReturn) {
         player.currentLocation = 'アジト';
         player.hp = battleData.stats.maxHp;
-
-        summaryText =
-`\n\n====================
-⛺【アジト凱旋完了＆部隊HP 100%全快！】
-追撃兵を蹴散らして戦利品（${lootText}）を強奪し、${getBaseName(player)}へ帰還した！
-本陣の肉を貪り喰らい、兵糧消費ゼロで部隊の傷が完全に癒えたぞ！${capNotice}${movedAwaySlotLostNotice}
-
-・強奪品: ${lootText}
-・部隊HP: ${player.hp}/${battleData.stats.maxHp}（完全回復！）
-・現在地: ${getCurrentLocationName(player)}
-★ 現在アジト滞在中！「🏰 アジト強化」で防壁・武器庫・過負荷炉を改築できるぞ！
-====================`;
+        interludeText = movedAwaySlotLostNotice;
 
       } else if (locData.isDrawbridge) {
         player.currentLocation = '跳ね橋';
-        summaryText =
-`\n\n====================
-🌉【攻城前哨戦突破：ヴァルハイト跳ね橋を落としたぞ！！】
-橋梁警備兵を血祭りにあげ、跳ね橋を吊っていた極太の鉄鎖をキメラ斧で叩き切った！
-ズガァァン！！と轟音を立てて巨大な跳ね橋が落ち、深い堀の向こうに【🏯 ヴァルハイト城】の黒鉄の大城門が口を開けた！
-
-🔥 魔軍卿 ガルガン：
-『ガハハハ！！ 橋は落ちたぞ！ ここから先は引き返せねえ天守への3連殴り込みだ！ 武器とHPを整えて突っ込めシンジ班！！』
-
-・強奪品: ${lootText}${capNotice}${movedAwaySlotLostNotice}
-・現在地: ${getCurrentLocationName(player)}
-・部隊残HP: ${player.hp}/${battleData.stats.maxHp}
-★ 下の『🏯 城門突破！ヴァルハイト城へ』で3連撃チキンレースへ挑めるぞ！
-====================`;
+        interludeText =
+`\n\n🔥 魔軍卿 ガルガン：
+「ガハハハ！！ 跳ね橋は落ちたぞ！ 深い堀の向こうに口を開けた『🏯 ヴァルハイト城』へ、武器とHPを整えて突っ込めシンジ班！！」${movedAwaySlotLostNotice}`;
 
       } else if (locData.isBoss && !locData.isChallenge) {
         player.bossWins[locKey] = (player.bossWins[locKey] || 0) + 1;
@@ -527,191 +538,130 @@ ${story}${summaryText}
 
         if (locKey === '検問所') {
           if (player.ch1Step === 0) player.ch1Step = 1;
-          summaryText =
-`\n\n====================
-⚔️【国境検問所を制圧！】
-新兵ガルシアを叩き潰し、黒鉄の峡谷地帯の防衛線をこじ開けた！
-📡【魔王城・通信傍受】正規軍閥派の連絡官：『なにっ、ガルガン軍の野良犬どもが検問所を抜いただと！？まぐれだ、次のバルツの重装甲で叩き潰されるわ！』
-
-・強奪品: ${lootText}${capNotice}${sixthWinNotice}
-・現在地: ${getCurrentLocationName(player)}
-・部隊残HP: ${player.hp}/${battleData.stats.maxHp}
-====================`;
+          interludeText =
+`\n\n📡【魔王城・通信傍受】正規軍閥派の連絡官：
+「なにっ、ガルガン軍の野良犬どもが国境検問所を抜いただと！？ まぐれだ、次の『前哨砦』でバルツの重装甲に叩き潰されるわ！」`;
 
         } else if (locKey === '前哨砦') {
           if (player.ch1Step === 1) player.ch1Step = 2;
-          summaryText =
-`\n\n====================
-🛡️【前哨砦を粉砕！】
-魔導重装兵バルツの鉄壁の甲冑を打ち砕いた！
-📡【魔王城・通信傍受】貴族魔族派の魔軍卿：『下等な野蛮人どもがバルツを抜いたか……だが要塞門には名将ロシュがいる。あやつらなど剛剣の錆となるわ！』
-
-・強奪品: ${lootText}${capNotice}${sixthWinNotice}
-・現在地: ${getCurrentLocationName(player)}
-・部隊残HP: ${player.hp}/${battleData.stats.maxHp}
-====================`;
+          interludeText =
+`\n\n📡【魔王城・通信傍受】貴族魔族派の魔軍卿：
+「下等な野蛮人どもがバルツの重装陣を抜いたか……だが『要塞門』には名将ロシュがいる。あやつらなど断罪の剛剣の錆となるわ！」`;
 
         } else if (locData.isChapter1FinalBoss) {
           player.ch1Step = 3;
           player.chapter = 2;
           player.hp = battleData.stats.maxHp;
-          summaryText =
-`\n\n====================
-👑【黒鉄の峡谷地帯 完全制圧：要塞門を居抜き乗っ取り！！】
-守備隊長ロシュの剛剣を粉砕し、国境最大の『人間軍の要塞門』を丸ごと乗っ取った！
-今日からここが俺たちの新本陣だ！（※アジト設備レベルは新本陣へ100%引き継がれた！）
-さらに目の前には人間どもの豊かな教会領が広がり、新戦域【聖涙川の教会平原】が解禁されたぞ！
-
-📡【魔王城・緊急通信】貴族魔族派の魔軍卿：
-『バカな……！ 我らが見下していたガルガンの野良犬どもが、ロシュの要塞門を奪い取って城にしただとぉぉ！？』
-
-🔥 魔軍卿 ガルガン：
-『ガハハハ！！ 見たかシンジ班！ エリートどもの蒼ざめたツラが最高の酒の肴だぜ！ この勢いで教会平原の魔導石も城も全部ぶんどるぞ！！』
-
-・強奪品: ${lootText}${capNotice}${sixthWinNotice}
-・現在地: ${getCurrentLocationName(player)}（HP全快！）
-====================`;
+          interludeText =
+`\n\n👑【要塞門を居抜き乗っ取り！新戦域『聖涙川の教会平原』解禁！】
+📡 貴族魔族派の魔軍卿：「バカな……！ 我らが見下していたガルガンの野良犬どもが、ロシュの要塞門を奪い取って自分の城にしただとぉぉ！？」
+🔥 魔軍卿 ガルガン：「ガハハハ！！ 見たかシンジ班！ エリートどもの蒼ざめたツラが最高の酒の肴だぜ！ この勢いで教会平原の魔導石も城も全部ぶんどるぞ！！」`;
 
         } else if (locKey === '工房跡') {
           if (player.ch2Step === 0) player.ch2Step = 1;
-          summaryText =
-`\n\n====================
-🧪【錬金術師の工房跡を制圧！】
-猛毒ガスを放つ従軍錬金術師をねじ伏せ、教会の秘術庫をこじ開けた！
-これで奥にそびえる教会平原の大ボス『聖堂重騎士』が守る【🏰 教会領大聖堂】への道が開かれたぞ！
-
-📡【魔王城・通信傍受】エリート魔道派の魔軍卿：
-『毒ガスによる損耗計算を無視して突破しただと……？ 理屈に合わん、あの野良魔族どもは一体何を武器に組み込んでいるのだ……！』
-
-・強奪品: ${lootText}${capNotice}${sixthWinNotice}
-・現在地: ${getCurrentLocationName(player)}
-・部隊残HP: ${player.hp}/${battleData.stats.maxHp}
-====================`;
+          interludeText =
+`\n\n📡【魔王城・通信傍受】エリート魔道派の魔軍卿：
+「毒ガスによる損耗計算を無視して工房跡を突破しただと……？ 理屈に合わん、あの野良魔族どもは一体何を武器に組み込んでいるのだ……！」
+（※奥にそびえる平原大ボス『🏰 教会領大聖堂』への進路が開かれた！）`;
 
         } else if (locData.isChapter2FinalBoss) {
           player.ch2Step = 2;
           player.chapter = 3;
           player.hp = battleData.stats.maxHp;
-          summaryText =
-`\n\n====================
-👑【聖涙川の教会平原 完全制圧：教会領大聖堂を乗っ取り！！】
-神聖反射盾を誇る聖堂重騎士を叩き割り、教会平原の最高拠点『大聖堂』を占領した！
-白亜の聖堂を黒鉄と血煙で染め上げ、俺たちの新たな本陣とする！
-さらに世界の中心たる激戦域【覇権の万魔中央回廊】が解禁されたぞ！
-
-📡【魔王城・緊急最高幹部会議】
-貴族魔族派の魔軍卿：『信じられん……教会領の大聖堂が、野良上がりのガルガン軍に占領されただと……！？』
-正規軍閥派の魔軍卿：『ぐぬぬ……魔王様も御前会議でガルガン卿の手柄を絶賛しておられる……！』
-
-🔥 魔軍卿 ガルガン：
-『ガハハハ！！ シンジ班、よくやった！ エリートどもが悔し涙を流しながら歯ぎしりしてやがるぜ！ 次は万魔中央回廊の人間遠征軍へ雪崩れ込むぞ！！』
-
-・強奪品: ${lootText}${capNotice}${sixthWinNotice}
-・現在地: ${getCurrentLocationName(player)}（HP全快！）
-====================`;
+          interludeText =
+`\n\n👑【教会領大聖堂を乗っ取り！新戦域『覇権の万魔中央回廊』解禁！】
+📡 貴族魔族派の魔軍卿：「信じられん……白亜の大聖堂が、野良上がりのガルガン軍に占領され黒鉄と血煙に染め上げられただと……！？」
+🔥 魔軍卿 ガルガン：「ガハハハ！！ シンジ班、よくやった！ 魔王様も御前会議でお前らの手柄を絶賛してくださったぞ！ 次は万魔中央回廊の人間遠征軍へ雪崩れ込め！！」`;
 
         } else if (locKey === '回廊関門') {
           if (player.ch3Step === 0) player.ch3Step = 1;
-          summaryText =
-`\n\n====================
-⚔️【激突の回廊関門を突破：猛将アルバートを撃破！！】
-残りHP半減から攻撃力2倍（56）の鬼神と化した『近衛重装騎士長アルバート』の重戦斧を真っ向から受け止め、キメラ武器で粉砕した！
-これで人間軍の最高指導者『聖騎士元帥ジークフリート』が待つ【🏰 遠征軍総本陣】への道が開かれたぞ！
-
-📡【魔王城・前線司令部傍受】正規軍閥派の魔軍卿：
-『ば、馬鹿な……！ 我が正規軍の重装師団が何ヶ月も抜くことができなかったアルバートの白獅子陣を、ガルガンの野良小隊が単独でぶち抜いただと！？』
-
-・強奪品: ${lootText}${capNotice}${sixthWinNotice}
-・現在地: ${getCurrentLocationName(player)}
-・部隊残HP: ${player.hp}/${battleData.stats.maxHp}
-====================`;
+          interludeText =
+`\n\n📡【魔王城・前線司令部傍受】正規軍閥派の魔軍卿：
+「ば、馬鹿な……！ 我が正規軍の重装師団が何ヶ月も抜くことができなかったアルバートの白獅子陣を、ガルガンの野良小隊が単独でぶち抜いただと！？」
+（※人間軍の最高指導者ジークフリート元帥が待つ『🏰 遠征軍総本陣』への進路が開かれた！）`;
 
         } else if (locData.isChapter3FinalBoss) {
           player.ch3Step = 2;
           player.hp = battleData.stats.maxHp;
-          summaryText =
-`\n\n====================
-👑【覇権の万魔中央回廊 完全制圧：聖騎士元帥ジークフリートを討ち取り、遠征軍総本陣を乗っ取り！！】
-聖剣が光に満ちる6ターン目の即死宣告が放たれる前に、超火力のキメラ武装で人間王国最高峰の英傑『ジークフリート元帥』を力尽くでねじ伏せた！
-人間遠征軍の総本陣を丸ごと占領し、今日からここが俺たちの新本陣だ！
-
-👑【万魔の王都・魔王城玉座の間】
-絶対支配者・魔王：
-『フハハハハ！！ 見事だガルガン、そしてシンジ班よ！ 正規軍閥も貴族派も手を出せなかったジークフリートの首を、貴様ら野良の牙が喰い千切ったか！ これより万魔中央回廊の覇権と戦利品はすべて貴様らのものだ！！』
-
-🔥 魔軍卿 ガルガン：
-『ガハハハハ！！ 聞いたか野郎ども！！ 魔王様の御前でエリート魔軍卿どもが真っ青になって震えてやがるぜ！ 俺たちの下剋上、ここに極まれりだァァ！！』
-
-・強奪品: ${lootText}${capNotice}${sixthWinNotice}
-・現在地: ${getCurrentLocationName(player)}（HP全快！）
-====================`;
+          interludeText =
+`\n\n👑【万魔の王都・魔王城玉座の間】
+絶対支配者・魔王：「フハハハハ！！ 見事だガルガン、そしてシンジ班よ！ 正規軍閥も貴族派も手を出せなかったジークフリートの首を、貴様ら野良の牙が喰い千切ったか！ これより万魔中央回廊の覇権はすべて貴様らのものだ！！」
+🔥 魔軍卿 ガルガン：「ガハハハハ！！ 聞いたか野郎ども！！ 魔王様の御前でエリート魔軍卿どもが真っ青になって震えてやがるぜ！ 俺たちの下剋上、ここに極まれりだァァ！！」`;
         }
-      } else if (!locData.isChallenge) {
+      } else {
         player.currentLocation = locKey;
-        summaryText =
-`\n\n【略奪戦果】
-・作戦地: ${locData.name}
-・強奪品: ${lootText}${capNotice}${movedAwaySlotLostNotice}
-・現在地: ${getCurrentLocationName(player)}
-・部隊残HP: ${player.hp}/${battleData.stats.maxHp}
-（※前線に駐留中。隣接エリアへ進軍するか、『⛺ アジトへ帰還』で本陣に戻ってタダ飯全快＆アジト強化を行え）`;
+        interludeText = movedAwaySlotLostNotice;
       }
     } else {
+      // 敗北時処理
       player.hp = 1;
       const retreatLoc = getRetreatLocation(locKey);
       player.currentLocation = retreatLoc;
 
-      let breakNotice = '';
-      let sixthAwakenNotice = '';
+      const failNotes = [];
+      if (movedAwaySlotLostNotice) failNotes.push(movedAwaySlotLostNotice.trim());
 
       if (locData.isBoss) {
         const brokenItemName = tryBreakSlotMaterial(player);
         if (brokenItemName) {
-          breakNotice = `\n💥【武具破損！】敵の猛撃を受けて後退する際、キメラ武器の基本枠に溶接していた『${brokenItemName}』が1個砕け散ってしまった…！（「🔨 武器鍛造」で空き枠を補充しろ！）`;
+          failNotes.push(`💥【武具破損】退却時の衝撃で、基本枠に溶接していた『${brokenItemName}』が1個砕け散った！（「🔨 武器鍛造」で補充せよ）`);
         } else {
-          breakNotice = `\n🛡️【破損回避】防壁と装甲のおかげで、後退時の基本5枠スロット破損は免れた！`;
+          failNotes.push(`🛡️【破損回避】防壁と装甲が衝撃を吸収し、武器スロットの破損を免れた！`);
         }
 
         if (usedSixthInfo) {
-          sixthAwakenNotice += `\n💨【第6枠素材消滅】第6スロットに装填していた『${usedSixthInfo.item}』は使い捨てのため燃え尽きて消滅した！`;
+          failNotes.push(`💨【第6枠消滅】装填していた『${usedSixthInfo.item}』は限界燃焼し尽きて消滅した。`);
         }
 
         if (player.awakenedBoss === locKey) {
-          sixthAwakenNotice += `\n🔥【第6スロット覚醒継続中！】『${locData.name}』に挑み続ける限り、第6スロットは継続しているぞ！（他の場所へ移動すると消滅）`;
+          failNotes.push(`🔥【第6スロット覚醒継続中】『${locData.name}』に挑み続ける限り、第6枠は維持される！（他エリア移動で消滅）`);
         } else {
           const awakenRate = getOverloadAwakenRate(player);
           if (Math.random() < awakenRate) {
             player.awakenedBoss = locKey;
             player.sixthSlot = null;
-            sixthAwakenNotice +=
-`\n\n🔥【武器が覚醒したぞ！！（第6スロット解放）】
-死闘の衝撃でキメラ武器が限界覚醒し、イレギュラーボーナス『第6のスロット』が解放された！（覚醒率 ${(awakenRate * 100).toFixed(0)}%）
-『${locData.name}』に挑み続ける間、リッチメニューの「🔨 武器鍛造」から独立した【6枠目】に素材を装填できるぞ！
-（※6枠目の素材は使い捨てで負けたら毎回消滅。6枠目に素材を付けて勝つと戦利品無し、付けずに勝てば5枠勝利扱いで戦利品獲得！場所を移動すると6枠目は消滅する）`;
+            failNotes.push(
+`🔥【限界突破：第6スロット覚醒！！】
+死闘の衝撃でキメラ武器の隠し機構が暴走し、イレギュラー枠『第6のスロット』が解放された！（「🔨 武器鍛造」から6枠目を装填可能。使い捨て・装着勝利時は戦利品なし・場所移動で消滅）`
+            );
           }
         }
       }
 
-      const retryGuide = retreatLoc !== 'アジト'
-        ? `\n🔥【前線1歩後退：即リベンジ可能！】\n本陣まで戻らず、すぐ手前の『${getCurrentLocationName(player)}』で踏みとどまったぞ！\nリッチメニューの「🍖 兵糧回復」で傷を癒やし、「🔨 武器鍛造」でスロットを組み直せば、すぐ『${locData.name}』へ再突撃できる！`
-        : `\n⛺ リッチメニューの「🍖 兵糧回復」を使うか、本陣の備蓄を整えて再出撃しろ！`;
-
-      summaryText =
-`\n\n【作戦失敗：1歩後退（${getCurrentLocationName(player)}）】
-・現在地: ${getCurrentLocationName(player)}
-・部隊残HP: ${player.hp}/${battleData.stats.maxHp}（要回復！）${breakNotice}${sixthAwakenNotice}${movedAwaySlotLostNotice}${retryGuide}
-\n${battleData.hint}`;
+      if (battleData.hint) failNotes.push(battleData.hint);
+      interludeText = failNotes.length > 0 ? `\n\n${failNotes.join('\n')}` : '';
     }
 
     await savePlayer(player);
 
-    const story = await generateRaidNarrative(locData.name, battleData, player, enemy, lootText);
+    // シーン種別の判定
+    let sceneType = 'RAID';
+    if (locData.isChallenge) sceneType = 'CHALLENGE';
+    else if (locData.isBoss) sceneType = 'BOSS';
+    else if (locData.isReturn) sceneType = 'RETURN';
+    else if (locData.isDrawbridge) sceneType = 'DRAWBRIDGE';
+
+    const story = await generateRaidNarrative(locData.name, battleData, player, enemy, lootText, {
+      locDesc: locData.desc,
+      sceneType,
+      isCapped: isCapped && lootText.includes('破棄'),
+      rawDropName,
+    });
+
+    const hpNote = (battleData.result === 'WIN' && (locData.isReturn || locData.isChapter1FinalBoss || locData.isChapter2FinalBoss || locData.isChapter3FinalBoss))
+      ? '（100%全快！）'
+      : (battleData.result !== 'WIN' ? '（瀕死・要「🍖 兵糧回復」）' : '');
 
     const messageText =
-`【定時作戦報告：${locData.name}】
-${story}${summaryText}
+`📯【遠征戦記：${locData.name}】
 
-▼ 次回の進軍先を下のボタンから選べ。`;
+${story}${interludeText}
+
+━━━━━━━━━━━━━━━━━━
+📍 現在地：${getCurrentLocationName(player)}
+❤️ 部隊HP：${player.hp} / ${battleData.stats.maxHp}${hpNote}
+🎒 戦利品：${lootText}
+━━━━━━━━━━━━━━━━━━`;
 
     try {
       await lineClient.pushMessage({
