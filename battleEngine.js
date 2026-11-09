@@ -158,19 +158,7 @@ export function getTotalSlots(slots) {
       playerTurnCount++;
       eHP -= pDmg;
   
-      if (stats.drainRate > 0 && pHP > 0) {
-        const stoneCount = (player.slots.stone || 0) + (player.sixthSlot === 'stone' ? 1 : 0);
-        const drainHeal = Math.max(4 * stoneCount, Math.floor(pDmg * stats.drainRate));
-        pHP = Math.min(stats.maxHp, pHP + drainHeal);
-        logs.push({
-          turn,
-          actor: `${player.leader}（シンジ班）`,
-          action: `🩸【魔導石の吸血脈動】敵の生命力を吸い取り HPが ${drainHeal} 回復！`,
-          damage: 0,
-          targetRemainHp: pHP,
-        });
-      }
-  
+      // ★修正：先に敵の反射（REFLECT_SHIELD）を処理し、その直後に吸血（DRAIN）で回復する順序に変更
       if (enemy.gimmick === 'REFLECT_SHIELD' && enemy.reflectRate && eHP > 0) {
         const rDmg = Math.max(1, Math.floor(pDmg * enemy.reflectRate));
         pHP -= rDmg;
@@ -182,6 +170,19 @@ export function getTotalSlots(slots) {
           targetRemainHp: Math.max(0, pHP),
         });
         if (pHP <= 0) break;
+      }
+
+      if (stats.drainRate > 0 && pHP > 0) {
+        const stoneCount = (player.slots.stone || 0) + (player.sixthSlot === 'stone' ? 1 : 0);
+        const drainHeal = Math.max(4 * stoneCount, Math.floor(pDmg * stats.drainRate));
+        pHP = Math.min(stats.maxHp, pHP + drainHeal);
+        logs.push({
+          turn,
+          actor: `${player.leader}（シンジ班）`,
+          action: `🩸【魔導石の吸血脈動】敵の生命力を吸い取り HPが ${drainHeal} 回復！`,
+          damage: 0,
+          targetRemainHp: pHP,
+        });
       }
   
       if (eHP <= 0) break;

@@ -8,7 +8,7 @@ const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 
 /**
  * 交戦データをもとに臨場感あふれる戦闘報告ログを生成する
- * （gemini-2.5-flash ➔ gemini-1.5-flash ➔ 定型文の自動バックアップ機構付き）
+ * （gemini-2.5-flash ➔ gemini-2.5-flash-lite ➔ 定型文の自動バックアップ機構付き）
  */
 export async function generateRaidNarrative(locationName, battleData, player, enemy, lootText) {
   try {
@@ -29,7 +29,7 @@ export async function generateRaidNarrative(locationName, battleData, player, en
 魔族部隊: ${player.name}（隊長: ${player.leader} / 主武装: ${player.weapon} [鋼:${s.steel} 板:${s.plate} 火:${s.powder} 石:${s.stone}]）
 敵: ${enemy.name}${enemyPersona}
 勝敗結果: ${battleData.result}（終了ターン: ${battleData.lastTurn}/8ターン / 部隊残HP: ${battleData.finalPlayerHp}/${battleData.stats.maxHp} / 敵残HP: ${battleData.remainEnemyHp}）
-強奪戦利品: ${lootText}
+强奪戦利品: ${lootText}
 ${dramaContext}
 戦闘経過ログ:
 ${JSON.stringify(battleData.events, null, 2)}
@@ -50,10 +50,10 @@ ${JSON.stringify(battleData.events, null, 2)}
         contents: prompt,
       });
     } catch (primaryErr) {
-      // 第2優先：制限・混雑時は自動でバックアップモデル (gemini-1.5-flash) へ切り替え
-      console.warn('>>> [AI Backup] gemini-2.5-flash 制限またはエラーのため gemini-1.5-flash へ自動切替:', primaryErr.message);
+      // 第2優先：制限・混雑時は自動でバックアップモデル (gemini-2.5-flash-lite) へ切り替え
+      console.warn('>>> [AI Backup] gemini-2.5-flash 制限またはエラーのため gemini-2.5-flash-lite へ自動切替:', primaryErr.message);
       response = await ai.models.generateContent({
-        model: 'gemini-1.5-flash',
+        model: 'gemini-2.5-flash-lite',
         contents: prompt,
       });
     }
