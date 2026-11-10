@@ -40,22 +40,21 @@ export function saveLocalPlayers(data) {
   }
 }
 
-export function createInitialPlayer(userId) {
+export function createInitialPlayer(userId, displayName = 'シンジ') {
+  const safeName = (displayName && typeof displayName === 'string' && displayName.trim())
+    ? displayName.trim()
+    : 'シンジ';
+
   return {
     userId,
-    name: 'シンジ班',
-    leader: 'シンジ',
+    name: `${safeName}班`,
+    leader: safeName,
     weapon: '無骨なキメラ断頭斧',
     baseHp: 100,
     baseAtk: 24,
     baseDef: 12,
     hp: 100,
-    slots: {
-      steel: 2,
-      plate: 2,
-      powder: 1,
-      stone: 0,
-    },
+    slots: { steel: 2, plate: 2, powder: 1, stone: 0 },
     awakenedBoss: null,
     sixthSlot: null,
     chapter: 1,
@@ -96,7 +95,7 @@ export function normalizePlayer(p, userId) {
   p.baseAtk = 24;
   p.baseDef = 12;
   if (!p.leader) p.leader = 'シンジ';
-  if (!p.name) p.name = 'シンジ班';
+  if (!p.name) p.name = `${p.leader}班`;
   if (!p.weapon) p.weapon = '無骨なキメラ断頭斧';
   if (p.ch1Step === undefined) p.ch1Step = 0;
   if (p.ch2Step === undefined) p.ch2Step = 0;
@@ -163,17 +162,15 @@ export async function loadPlayer(userId) {
         .select('*')
         .eq('line_user_id', userId)
         .maybeSingle();
-
       if (error) {
         console.error(`Supabase 個別読み込みエラー (${userId}):`, error.message);
       } else if (data) {
         return rowToPlayer(data);
       }
     } catch (err) {
-      console.error(`Supabase 通信例外(loadPlayer):`, err);
+      console.error('Supabase 通信例外(loadPlayer):', err);
     }
   }
-
   const localData = loadLocalPlayers();
   if (localData[userId]) {
     return normalizePlayer(localData[userId], userId);
@@ -183,13 +180,10 @@ export async function loadPlayer(userId) {
 
 export async function savePlayer(player) {
   if (!player || !player.userId) return;
-
   const localData = loadLocalPlayers();
   localData[player.userId] = player;
   saveLocalPlayers(localData);
-
   if (!supabase) return;
-
   try {
     const row = {
       line_user_id: player.userId,
@@ -199,23 +193,25 @@ export async function savePlayer(player) {
       inventory: player,
       updated_at: new Date().toISOString(),
     };
-
     const { error } = await supabase
       .from('players')
       .upsert([row], { onConflict: 'line_user_id' });
-
     if (error) {
       console.error(`Supabase 個別保存(Upsert)エラー (${player.userId}):`, error.message);
     }
   } catch (err) {
-    console.error(`Supabase 通信例外(savePlayer):`, err);
+    console.error('Supabase 通信例外(savePlayer):', err);
   }
 }
 
-export async function getOrCreatePlayer(userId) {
+export async function getOrCreatePlayer(userId, displayName = null) {
   let player = await loadPlayer(userId);
   if (!player) {
-    player = createInitialPlayer(userId);
+    player = createInitialPlayer(userId, displayName || 'シンジ');
+  } else if (displayName && typeof displayName === 'string' && displayName.trim()) {
+    const safeName = displayName.trim();
+    player.leader = safeName;
+    player.name = `${safeName}班`;
   }
   player = normalizePlayer(player, userId);
   await savePlayer(player);
@@ -224,20 +220,24 @@ export async function getOrCreatePlayer(userId) {
 
 export async function getAllPlayerIds() {
   const idSet = new Set();
+  const localData = loadLocalPlayers();
+  for (const uid of Object.keys(localData)) {
+    idSet.add(uid);
+  }
   if (supabase) {
     try {
-      const { data, error } = await supabase.from('players').select('line_user_id');
-      if (!error && data) {
-        data.forEach((r) => {
-          if (r.line_user_id) idSet.add(r.line_user_id);
-        });
+      const { data, error } = await supabase
+        .from('players')
+        .select('line_user_id');
+      if (!error && Array.isArray(data)) {
+        for (const row of data) {
+          if (row.line_user_id) idSet.add(row.line_user_id);
+        }
       }
     } catch (err) {
-      console.error('Supabase 定時実行ユーザー一覧取得エラー:', err);
+      console.error('Supabase 全ID取得例外:', err);
     }
   }
-  const localPlayers = loadLocalPlayers();
-  Object.keys(localPlayers).forEach((id) => idSet.add(id));
   return Array.from(idSet);
 }
 
@@ -336,7 +336,13 @@ export function addLootWithCap(player, itemName, count) {
 
 export function formatLootList(lootArray) {
   if (!lootArray || lootArray.length === 0) return 'なし';
-  const iconMap = { '王国鋼': '⛏️', '装甲板': '🛡️', '黒火薬': '🧨', '魔導石': '🔮', '兵糧': '🍞' };
+  const iconMap = {
+    '王国鋼': '⛏️',
+    '装甲板': '🛡️',
+    '黒火薬': '🧨',
+    '魔導石': '🔮',
+    '兵糧': '🍞',
+  };
   const summary = {};
   for (const entry of lootArray) {
     summary[entry.item] = (summary[entry.item] || 0) + entry.count;
