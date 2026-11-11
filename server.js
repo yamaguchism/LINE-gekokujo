@@ -73,18 +73,17 @@ function buildPrologueMessage(leaderName = 'シンジ') {
 
 ━━━━━━━━━━━━━━━━━━
 ⛺ 本陣：荒れ野の廃砦（初期アジト）
-🪓 初期武装：無骨なキメラ断頭斧（鋼2/板2/火1）
+🪓 初期武装：無骨なキメラ断頭斧（4/5枠：鋼2/板2/空1）
 ⏰ 定時進軍：毎日 8:00 / 12:00 / 20:00 自動決行
 ━━━━━━━━━━━━━━━━━━
-▼ ガルガン軍の第一歩だ。最初の進軍先を選べ（※即座に出撃可能）`;
+▼ ガルガン軍の第一歩だ。検問所への突入戦術を選べ（※即座に開戦）`;
 
   return {
     type: 'text',
     text,
     quickReply: makeQuickReply([
-      { label: '⛏️ 鉱山へ突撃（鋼・板）', text: '出撃：渓谷' },
-      { label: '🍞 街道を急襲（火・糧）', text: '出撃：街道' },
-      { label: '⚔️ 検問所へ直行（ボス）', text: '出撃：検問所' },
+      { label: '💥 正面突破（ガルシアの首級）', text: '初陣：正面' },
+      { label: '🐀 兵站倉庫から急襲（奇襲）', text: '初陣：奇襲' },
     ]),
   };
 }
@@ -164,6 +163,110 @@ app.post('/webhook', middleware(lineConfig), async (req, res) => {
       await lineClient.replyMessage({
         replyToken: event.replyToken,
         messages: [buildPrologueMessage(updated.player.leader)],
+      });
+      continue;
+    }
+
+    // ------------------------------------------
+    // 0-C. チュートリアル初陣（正面突破 or 兵站倉庫奇襲 ➔ 即時ガルシア戦）
+    // ------------------------------------------
+    if (userText === '初陣：正面' || userText === '初陣：奇襲') {
+      const isFront = userText === '初陣：正面';
+      const squadName = player.name || `${player.leader || 'シンジ'}班`;
+
+      const openingScene = isFront
+        ? `正面の防護柵をキメラ断頭斧で叩き割り、${squadName}が咆哮とともに突入！\n慌てて剣を抜いた検問所の守備隊長・新兵ガルシアが蒼白な顔で立ち塞がる！`
+        : `裏手の兵站倉庫の天窓を蹴破り、${squadName}が闇に紛れて奇襲！\n乾パンを喉に詰まらせかけた守備隊長・新兵ガルシアが、悲鳴を上げながら剣を構えた！`;
+
+      const lootResult = addLootWithCap(player, '王国鋼', 1);
+      player.bossWins = player.bossWins || {};
+      player.bossWins['検問所'] = (player.bossWins['検問所'] || 0) + 1;
+      if ((player.ch1Step || 0) < 1) {
+        player.ch1Step = 1;
+      }
+      player.currentLocation = '検問所';
+      await savePlayer(player);
+
+      const s = player.slots || { steel: 2, plate: 2, powder: 0, stone: 0 };
+      const total = getTotalSlots(s);
+      const capNotice = lootResult.capped ? '（※武器庫上限到達）' : '';
+
+      const resultText =
+`⚔️【初陣決着：国境の検問所】
+
+${openingScene}
+
+不揃いな『${player.weapon}（${total}/5枠）』が唸りを上げ、ガルシアの華奢な盾ごと兜を強引に叩き割った！
+守備隊は恐慌状態に陥り、武器を捨てて潰走していく！
+
+━━━━━━━━━━━━━━━━━━
+🏆 勝敗：完全制圧（新兵ガルシア討取）
+📦 略奪品：⛏️王国鋼 × 1 ${capNotice}
+━━━━━━━━━━━━━━━━━━
+
+「おいおい、初陣にしては上出来じゃねえか！ だがな、枠が1つ空いたままのナマクラ斧じゃ、この先の『前哨砦』じゃ通用しねえぞ」
+
+ガルガンが泥にまみれた金槌を投げて寄こす。
+
+「今奪ったばかりのその『王国鋼』を、断頭斧の空き枠に力ずくで叩き込め！ 武器ってのはこうやって現場で育てるもんだ！」`;
+
+      await lineClient.replyMessage({
+        replyToken: event.replyToken,
+        messages: [{
+          type: 'text',
+          text: resultText,
+          quickReply: makeQuickReply([
+            { label: '🔨 奪った王国鋼を空き枠に溶接', text: 'チュートリアル：溶接' },
+          ]),
+        }],
+      });
+      continue;
+    }
+
+    // ------------------------------------------
+    // 0-D. チュートリアル溶接（空き枠への充填 ➔ 本編ループ合流）
+    // ------------------------------------------
+    if (userText === 'チュートリアル：溶接') {
+      const prevStats = calculateEffectiveStats(player);
+      const s = player.slots;
+      const total = getTotalSlots(s);
+      const info = getSlotItemInfo('steel');
+
+      if (total < 5) {
+        if ((player.inventory['王国鋼'] || 0) > 0) {
+          player.inventory['王国鋼'] -= 1;
+        }
+        player.slots.steel = (player.slots.steel || 0) + 1;
+        await savePlayer(player);
+      }
+
+      const newTotal = getTotalSlots(player.slots);
+      const newStats = calculateEffectiveStats(player);
+
+      const weldText =
+`🔨【${info.label} を溶接！（${newTotal}/5枠）】
+
+火花と焦げた油の匂いが立ち込め、空いていた5枠目に『⛏️王国鋼』がガッチリと食い込んだ！
+
+━━━━━━━━━━━━━━━━━━
+🪓 現在の構成：⛏️鋼${player.slots.steel} / 🛡️板${player.slots.plate} / 🧨火${player.slots.powder} / 🔮石${player.slots.stone}
+📊 実効能力：攻${prevStats.atk} ➔ ${newStats.atk} | 防${prevStats.def} ➔ ${newStats.def} | HP${player.hp}/${newStats.maxHp}
+━━━━━━━━━━━━━━━━━━
+
+「ヒャハハ！ いい重みが乗りやがったな！
+……だがな、枠を埋めただけで勝てるほどこの先は甘くねえぞ。敵の盾が厚けりゃ『🧨黒火薬』を盛り、猛攻に耐えるなら『🛡️装甲板』に張り替える。『🔨 鍛冶』で枠を付け替えるのが生き残る鉄則だ」
+
+ガルガンは血のついた作戦地図を広げた。
+
+「さあ、ここからが本当の戦争（定時進軍：8時/12時/20時）だ。次の進軍先を選んで予約しておけ！」`;
+
+      await lineClient.replyMessage({
+        replyToken: event.replyToken,
+        messages: [{
+          type: 'text',
+          text: weldText,
+          quickReply: makeQuickReply(getSmartButtons(player)),
+        }],
       });
       continue;
     }
@@ -259,7 +362,7 @@ app.post('/webhook', middleware(lineConfig), async (req, res) => {
           text:
 `🌙【夜間2連遠征・出撃予約完了！】
 進軍ルート：『${n1}』➔『${n2}』
-・第1戦に勝利すると、そのまま第2戦へ連戦突입する！
+・第1戦に勝利すると、そのまま第2戦へ連戦突入する！
 ・現在地：${getCurrentLocationName(player)}
 
 ※リッチメニューまたは下の『⚡ 今すぐ決行』で即座に連戦テストが可能だ。`,

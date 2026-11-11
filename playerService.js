@@ -54,7 +54,7 @@ export function createInitialPlayer(userId, displayName = 'シンジ') {
     baseAtk: 24,
     baseDef: 12,
     hp: 100,
-    slots: { steel: 2, plate: 2, powder: 1, stone: 0 },
+    slots: { steel: 2, plate: 2, powder: 0, stone: 0 },
     awakenedBoss: null,
     sixthSlot: null,
     chapter: 1,
@@ -122,7 +122,7 @@ export function normalizePlayer(p, userId) {
 
   delete p.rankPoints;
 
-  if (!p.slots) p.slots = { steel: 2, plate: 2, powder: 1, stone: 0 };
+  if (!p.slots) p.slots = { steel: 2, plate: 2, powder: 0, stone: 0 };
   if (p.slots.stone === undefined) p.slots.stone = 0;
 
   if (!p.inventory) p.inventory = {};
