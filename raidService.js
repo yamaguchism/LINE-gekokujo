@@ -6,7 +6,7 @@ import {
   calculateEffectiveStats,
   simulateBattle,
 } from './battleEngine.js';
-import { generateRaidNarrative } from './aiService.js';
+import { generateRaidNarrative, generateFactionReaction } from './aiService.js';
 import {
   getOrCreatePlayer,
   savePlayer,
@@ -19,6 +19,20 @@ import {
   formatLootList,
 } from './playerService.js';
 import { makeQuickReply, getSmartButtons } from './uiService.js';
+
+/**
+ * 幕間劇（第2幕）が保留中の場合、QuickReplyの先頭に閲覧ボタンを差し込むヘルパー
+ */
+function buildRaidQuickReply(player) {
+  const baseButtons = getSmartButtons(player);
+  if (player.pendingFactionStory) {
+    return makeQuickReply([
+      { label: '🍷 魔王城の反応を見る', text: '幕間劇を見る' },
+      ...baseButtons,
+    ].slice(0, 13));
+  }
+  return makeQuickReply(baseButtons);
+}
 
 // ==========================================
 // 1. 特殊作戦①：ヴァルハイト城（3連撃チキンレースローグ）処理
@@ -49,19 +63,19 @@ export async function executeCastleRogueStep(lineClient, userId, player) {
     const floorLootText = formatLootList(combinedFloorLoot);
     const totalBagText = formatLootList(player.castleLoot);
 
-    story = await generateRaidNarrative(
-      `ヴァルハイト城・${floorInfo.floorName}`,
-      battleData,
-      player,
-      enemy,
-      floorLootText,
-      {
-        locDesc: castleData.desc,
-        sceneType: 'CASTLE',
-      }
-    );
-
     if (nextFloorNum < 3) {
+      story = await generateRaidNarrative(
+        `ヴァルハイト城・${floorInfo.floorName}`,
+        battleData,
+        player,
+        enemy,
+        floorLootText,
+        {
+          locDesc: castleData.desc,
+          sceneType: 'CASTLE',
+        }
+      );
+
       player.castleFloor = nextFloorNum;
       const nextFloorTitle = castleData.castleFloors[nextFloorNum + 1].floorName;
 
@@ -78,7 +92,9 @@ ${story}
 ⚠️【決断の時】
 ここで『⛺ 城外へ脱出』すれば袋の物資はすべて持ち帰れるが、残HPのまま『${nextFloorTitle}』へ突撃して敗れれば袋は【全没収】となる。行くか、引くか！？`;
     } else {
-      player.bossWins['ヴァルハイト城'] = (player.bossWins['ヴァルハイト城'] || 0) + 1;
+      const prevCastleWins = (player.bossWins && player.bossWins['ヴァルハイト城']) || 0;
+      const isFirstCastleWin = prevCastleWins === 0;
+      player.bossWins['ヴァルハイト城'] = prevCastleWins + 1;
 
       const addedResults = [];
       let anyCapped = false;
@@ -95,15 +111,42 @@ ${story}
       player.currentLocation = 'アジト';
       player.hp = battleData.stats.maxHp;
 
+      if (isFirstCastleWin) {
+        const [narrativeText, reactionText] = await Promise.all([
+          generateRaidNarrative(
+            `ヴァルハイト城・${floorInfo.floorName}`,
+            battleData,
+            player,
+            enemy,
+            floorLootText,
+            { locDesc: castleData.desc, sceneType: 'CASTLE' }
+          ),
+          generateFactionReaction(`ヴァルハイト城・${floorInfo.floorName}`, battleData, player, enemy),
+        ]);
+        story = narrativeText;
+        player.pendingFactionStory = reactionText;
+      } else {
+        story = await generateRaidNarrative(
+          `ヴァルハイト城・${floorInfo.floorName}`,
+          battleData,
+          player,
+          enemy,
+          floorLootText,
+          { locDesc: castleData.desc, sceneType: 'CASTLE' }
+        );
+      }
+
+      const factionHook = isFirstCastleWin
+        ? `\n🍷【魔王城・作戦会議室】難攻不落のヴァルハイト城陥落の報に、魔王城の上層部3派閥が激しく動揺しているようだ……！（▼下の『🍷 魔王城の反応を見る』から覗き見よ）`
+        : '';
+
       messageText =
 `👑【城郭強襲戦記：ヴァルハイト城・天守閣完全制覇】
 
 ${story}
 
-📡【魔王城・緊急傍受】貴族魔族派の魔軍卿：
-「な、なんだと！？ 聖涙川の教会平原が誇るヴァルハイト城が、ガルガン軍の野良犬小隊に天守まで荒らされて丸裸にされただと！？」
 🔥 魔軍卿 ガルガン：
-「ガハハハ！！ 天守閣のてっぺんまで綺麗にぶんどってきやがったなシンジ班！ 偽善者どもの泣きっ面が最高に愉快だぜ！！」
+「ガハハハ！！ 天守閣のてっぺんまで綺麗にぶんどってきやがったな${player.name}！ 偽善者どもの泣きっ面が最高に愉快だぜ！！」${factionHook}
 
 ━━━━━━━━━━━━━━━━━━
 📍 現在地：${getCurrentLocationName(player)}
@@ -153,7 +196,7 @@ ${battleData.hint}
       messages: [{
         type: 'text',
         text: messageText,
-        quickReply: makeQuickReply(getSmartButtons(player)),
+        quickReply: buildRaidQuickReply(player),
       }],
     });
   } catch (err) {
@@ -298,7 +341,7 @@ ${story1}
     player.currentLocation = step2Key;
 
     if (loc2.isDrawbridge) {
-      step2Extra = `\n\n🔥 魔軍卿 ガルガン：\n「ガハハハ！ 跳ね橋の鉄鎖をぶっ千切ったな！ 目の前に口を開けた『🏯 ヴァルハイト城』へそのまま殴り込めシンジ班！！」`;
+      step2Extra = `\n\n🔥 魔軍卿 ガルガン：\n「ガハハハ！ 跳ね橋の鉄鎖をぶっ千切ったな！ 目の前に口を開けた『🏯 ヴァルハイト城』へそのまま殴り込め${player.name}！！」`;
     }
   } else {
     player.hp = 1;
@@ -423,7 +466,7 @@ export async function executeScheduledRaids(lineClient, targetUserId = null, for
       await savePlayer(player);
 
       const story = await generateRaidNarrative(`${baseName}`, battleData, player, defEnemy, lootText, {
-        locDesc: `シンジ班の本陣『${baseName}』への敵奇襲部隊による強襲`,
+        locDesc: `${player.name}の本陣『${baseName}』への敵奇襲部隊による強襲`,
         sceneType: 'DEFENSE',
       });
 
@@ -479,6 +522,7 @@ ${story}${interludeText}
     let isCapped = false;
     let rawDropName = '';
     let interludeText = '';
+    let shouldTriggerFactionReaction = false;
 
     if (battleData.result === 'WIN') {
       if (locData.isBoss) {
@@ -509,13 +553,17 @@ ${story}${interludeText}
         }
       }
 
-      // 勝利時の幕間劇（通信傍受・進行フラグ更新）
+      // 勝利時の進行フラグ更新 ＆ 幕間劇（第2幕）発火判定
       if (locData.isChallenge) {
-        player.bossWins[locKey] = (player.bossWins[locKey] || 0) + 1;
+        const prevWins = (player.bossWins && player.bossWins[locKey]) || 0;
+        const isFirstBossWin = prevWins === 0;
+        player.bossWins[locKey] = prevWins + 1;
         player.currentLocation = '礼拝堂';
-        interludeText =
-`\n\n📡【魔王城・緊急傍受】エリート魔道派の魔軍卿：
-「な……何だと！？ 教会が極秘建造していた対魔神聖巨像アークエンゼルを、ガルガンの野良犬どもが単独でスクラップにしただと！？ 計算が合わん……あり得ん！！」`;
+
+        if (isFirstBossWin) {
+          shouldTriggerFactionReaction = true;
+          interludeText = `\n\n🍷【魔王城・作戦会議室】対魔神聖巨像アークエンゼル単独撃破の報が、魔王城の上層部3派閥を震撼させている……！（▼下の『🍷 魔王城の反応を見る』から覗き見よ）`;
+        }
 
       } else if (locData.isReturn) {
         player.currentLocation = 'アジト';
@@ -526,67 +574,87 @@ ${story}${interludeText}
         player.currentLocation = '跳ね橋';
         interludeText =
 `\n\n🔥 魔軍卿 ガルガン：
-「ガハハハ！！ 跳ね橋は落ちたぞ！ 深い堀の向こうに口を開けた『🏯 ヴァルハイト城』へ、武器とHPを整えて突っ込めシンジ班！！」${movedAwaySlotLostNotice}`;
+「ガハハハ！！ 跳ね橋は落ちたぞ！ 深い堀の向こうに口を開けた『🏯 ヴァルハイト城』へ、武器とHPを整えて突っ込め${player.name}！！」${movedAwaySlotLostNotice}`;
 
       } else if (locData.isBoss && !locData.isChallenge) {
-        player.bossWins[locKey] = (player.bossWins[locKey] || 0) + 1;
+        const prevWins = (player.bossWins && player.bossWins[locKey]) || 0;
+        const isFirstBossWin = prevWins === 0;
+        player.bossWins[locKey] = prevWins + 1;
+
         player.currentLocation = (
           locData.isChapter1FinalBoss ||
           locData.isChapter2FinalBoss ||
           locData.isChapter3FinalBoss
         ) ? 'アジト' : locKey;
 
+        // 小ボス（検問所）以外の中ボス・大ボスの「初回撃破時のみ」第2幕を生成
+        if (locKey !== '検問所' && isFirstBossWin) {
+          shouldTriggerFactionReaction = true;
+        }
+
         if (locKey === '検問所') {
           if (player.ch1Step === 0) player.ch1Step = 1;
-          interludeText =
-`\n\n📡【魔王城・通信傍受】正規軍閥派の連絡官：
-「なにっ、ガルガン軍の野良犬どもが国境検問所を抜いただと！？ まぐれだ、次の『前哨砦』でバルツの重装甲に叩き潰されるわ！」`;
+          if (isFirstBossWin) {
+            interludeText =
+`\n\n📜【人間軍・伝令兵の悲鳴】：
+「こ、国境検問所がガルガン軍の野良小隊に突破された！ 次の『前哨砦』を守るバルツ隊長に急報を送れッ！」`;
+          }
 
         } else if (locKey === '前哨砦') {
           if (player.ch1Step === 1) player.ch1Step = 2;
-          interludeText =
-`\n\n📡【魔王城・通信傍受】貴族魔族派の魔軍卿：
-「下等な野蛮人どもがバルツの重装陣を抜いたか……だが『要塞門』には名将ロシュがいる。あやつらなど断罪の剛剣の錆となるわ！」`;
+          if (isFirstBossWin) {
+            interludeText =
+`\n\n🍷【魔王城・作戦会議室】前哨砦陥落の報が届き、魔王城の上層部3派閥がざわつき始めたようだ……！（▼下の『🍷 魔王城の反応を見る』から覗き見よ）`;
+          }
 
         } else if (locData.isChapter1FinalBoss) {
           player.ch1Step = 3;
           player.chapter = 2;
           player.hp = battleData.stats.maxHp;
-          interludeText =
+          if (isFirstBossWin) {
+            interludeText =
 `\n\n👑【要塞門を居抜き乗っ取り！新戦域『聖涙川の教会平原』解禁！】
-📡 貴族魔族派の魔軍卿：「バカな……！ 我らが見下していたガルガンの野良犬どもが、ロシュの要塞門を奪い取って自分の城にしただとぉぉ！？」
-🔥 魔軍卿 ガルガン：「ガハハハ！！ 見たかシンジ班！ エリートどもの蒼ざめたツラが最高の酒の肴だぜ！ この勢いで教会平原の魔導石も城も全部ぶんどるぞ！！」`;
+🔥 魔軍卿 ガルガン：「ガハハハ！！ 見たか${player.name}！ ロシュの要塞門を奪い取って俺たちの新しい城にしてやったぜ！ 今頃、魔王城のエリートどもが真っ青になって泡を吹いてやがるはずだ！！」
+🍷（※下の『🍷 魔王城の反応を見る』から上層部3派閥の動揺を覗き見よ！）`;
+          }
 
         } else if (locKey === '工房跡') {
           if (player.ch2Step === 0) player.ch2Step = 1;
-          interludeText =
-`\n\n📡【魔王城・通信傍受】エリート魔道派の魔軍卿：
-「毒ガスによる損耗計算を無視して工房跡を突破しただと……？ 理屈に合わん、あの野良魔族どもは一体何を武器に組み込んでいるのだ……！」
-（※奥にそびえる平原大ボス『🏰 教会領大聖堂』への進路が開かれた！）`;
+          if (isFirstBossWin) {
+            interludeText =
+`\n\n（※奥にそびえる平原大ボス『🏰 教会領大聖堂』への進路が開かれた！）
+🍷【魔王城・作戦会議室】猛毒の工房跡突破の報に、魔王城の上層部3派閥が動揺しているようだ……！（▼下の『🍷 魔王城の反応を見る』から覗き見よ）`;
+          }
 
         } else if (locData.isChapter2FinalBoss) {
           player.ch2Step = 2;
           player.chapter = 3;
           player.hp = battleData.stats.maxHp;
-          interludeText =
+          if (isFirstBossWin) {
+            interludeText =
 `\n\n👑【教会領大聖堂を乗っ取り！新戦域『覇権の万魔中央回廊』解禁！】
-📡 貴族魔族派の魔軍卿：「信じられん……白亜の大聖堂が、野良上がりのガルガン軍に占領され黒鉄と血煙に染め上げられただと……！？」
-🔥 魔軍卿 ガルガン：「ガハハハ！！ シンジ班、よくやった！ 魔王様も御前会議でお前らの手柄を絶賛してくださったぞ！ 次は万魔中央回廊の人間遠征軍へ雪崩れ込め！！」`;
+🔥 魔軍卿 ガルガン：「ガハハハ！！ ${player.name}、よくやった！ 白亜の大聖堂を黒鉄と血煙に染め上げてやったぜ！ 次は万魔中央回廊の人間遠征軍へ雪崩れ込め！！」
+🍷（※下の『🍷 魔王城の反応を見る』から上層部3派閥の動揺を覗き見よ！）`;
+          }
 
         } else if (locKey === '回廊関門') {
           if (player.ch3Step === 0) player.ch3Step = 1;
-          interludeText =
-`\n\n📡【魔王城・前線司令部傍受】正規軍閥派の魔軍卿：
-「ば、馬鹿な……！ 我が正規軍の重装師団が何ヶ月も抜くことができなかったアルバートの白獅子陣を、ガルガンの野良小隊が単独でぶち抜いただと！？」
-（※人間軍の最高指導者ジークフリート元帥が待つ『🏰 遠征軍総本陣』への進路が開かれた！）`;
+          if (isFirstBossWin) {
+            interludeText =
+`\n\n（※人間軍の最高指導者ジークフリート元帥が待つ『🏰 遠征軍総本陣』への進路が開かれた！）
+🍷【魔王城・作戦会議室】正規軍すら抜けなかった白獅子陣突破の報に、魔王城の上層部3派閥が激震している……！（▼下の『🍷 魔王城の反応を見る』から覗き見よ）`;
+          }
 
         } else if (locData.isChapter3FinalBoss) {
           player.ch3Step = 2;
           player.hp = battleData.stats.maxHp;
-          interludeText =
+          if (isFirstBossWin) {
+            interludeText =
 `\n\n👑【万魔の王都・魔王城玉座の間】
-絶対支配者・魔王：「フハハハハ！！ 見事だガルガン、そしてシンジ班よ！ 正規軍閥も貴族派も手を出せなかったジークフリートの首を、貴様ら野良の牙が喰い千切ったか！ これより万魔中央回廊の覇権はすべて貴様らのものだ！！」
-🔥 魔軍卿 ガルガン：「ガハハハハ！！ 聞いたか野郎ども！！ 魔王様の御前でエリート魔軍卿どもが真っ青になって震えてやがるぜ！ 俺たちの下剋上、ここに極まれりだァァ！！」`;
+絶対支配者・魔王：「フハハハハ！！ 見事だガルガン、そして${player.name}よ！ 正規軍閥も貴族派も手を出せなかったジークフリートの首を、貴様ら野良の牙が喰い千切ったか！ これより万魔中央回廊の覇権はすべて貴様らのものだ！！」
+🔥 魔軍卿 ガルガン：「ガハハハハ！！ 聞いたか野郎ども！！ 魔王様の御前でエリート魔軍卿どもが真っ青になって震えてやがるぜ！ 俺たちの下剋上、ここに極まれりだァァ！！」
+🍷（※下の『🍷 魔王城の反応を見る』から上層部3派閥の末路を覗き見よ！）`;
+          }
         }
       } else {
         player.currentLocation = locKey;
@@ -632,8 +700,6 @@ ${story}${interludeText}
       interludeText = failNotes.length > 0 ? `\n\n${failNotes.join('\n')}` : '';
     }
 
-    await savePlayer(player);
-
     // シーン種別の判定
     let sceneType = 'RAID';
     if (locData.isChallenge) sceneType = 'CHALLENGE';
@@ -641,12 +707,29 @@ ${story}${interludeText}
     else if (locData.isReturn) sceneType = 'RETURN';
     else if (locData.isDrawbridge) sceneType = 'DRAWBRIDGE';
 
-    const story = await generateRaidNarrative(locData.name, battleData, player, enemy, lootText, {
-      locDesc: locData.desc,
-      sceneType,
-      isCapped: isCapped && lootText.includes('破棄'),
-      rawDropName,
-    });
+    let story = '';
+    if (shouldTriggerFactionReaction) {
+      const [narrativeText, reactionText] = await Promise.all([
+        generateRaidNarrative(locData.name, battleData, player, enemy, lootText, {
+          locDesc: locData.desc,
+          sceneType,
+          isCapped: isCapped && lootText.includes('破棄'),
+          rawDropName,
+        }),
+        generateFactionReaction(locData.name, battleData, player, enemy),
+      ]);
+      story = narrativeText;
+      player.pendingFactionStory = reactionText;
+    } else {
+      story = await generateRaidNarrative(locData.name, battleData, player, enemy, lootText, {
+        locDesc: locData.desc,
+        sceneType,
+        isCapped: isCapped && lootText.includes('破棄'),
+        rawDropName,
+      });
+    }
+
+    await savePlayer(player);
 
     const hpNote = (battleData.result === 'WIN' && (locData.isReturn || locData.isChapter1FinalBoss || locData.isChapter2FinalBoss || locData.isChapter3FinalBoss))
       ? '（100%全快！）'
@@ -669,7 +752,7 @@ ${story}${interludeText}
         messages: [{
           type: 'text',
           text: messageText,
-          quickReply: makeQuickReply(getSmartButtons(player)),
+          quickReply: buildRaidQuickReply(player),
         }],
       });
     } catch (err) {

@@ -272,6 +272,44 @@ ${openingScene}
     }
 
     // ------------------------------------------
+    // 0-E. 魔王城・上層部3派閥の幕間劇（第2幕）閲覧コマンド
+    // ------------------------------------------
+    if (userText === '幕間劇を見る' || userText === '🍷 魔王城の反応を見る') {
+      if (!player.pendingFactionStory) {
+        await lineClient.replyMessage({
+          replyToken: event.replyToken,
+          messages: [{
+            type: 'text',
+            text: `🍷 魔王城の作戦会議室の魔導通信はすでに途絶えているようだ。\n📍 現在地：${getCurrentLocationName(player)}\n▼ 下のボタンから次の行動を選択せよ。`,
+            quickReply: makeQuickReply(getSmartButtons(player)),
+          }],
+        });
+        continue;
+      }
+
+      const storyToDeliver = player.pendingFactionStory;
+      player.pendingFactionStory = null;
+      await savePlayer(player);
+
+      const factionReplyText =
+`${storyToDeliver}
+
+━━━━━━━━━━━━━━━━━━
+📍 現在地：${getCurrentLocationName(player)}
+🔥 魔軍卿 ガルガン：「ガハハハ！ 城の連中が泡を吹いてやがるぜ！ さあ、次の進軍先を選んでさらに暴れ回れ！」`;
+
+      await lineClient.replyMessage({
+        replyToken: event.replyToken,
+        messages: [{
+          type: 'text',
+          text: factionReplyText,
+          quickReply: makeQuickReply(getSmartButtons(player)),
+        }],
+      });
+      continue;
+    }
+
+    // ------------------------------------------
     // A. 開幕・リセット・地図・行動選択メニュー
     // ------------------------------------------
     if (
