@@ -21,6 +21,11 @@ import {
 import { makeQuickReply, getSmartButtons } from './uiService.js';
 
 /**
+ * Gemini API 連続呼び出し時のレート制限（429）衝突を回避する小休止ヘルパー
+ */
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
  * 幕間劇（第2幕）が保留中の場合、QuickReplyの先頭に閲覧ボタンを差し込むヘルパー
  */
 function buildRaidQuickReply(player) {
@@ -111,28 +116,22 @@ ${story}
       player.currentLocation = 'アジト';
       player.hp = battleData.stats.maxHp;
 
+      story = await generateRaidNarrative(
+        `ヴァルハイト城・${floorInfo.floorName}`,
+        battleData,
+        player,
+        enemy,
+        floorLootText,
+        { locDesc: castleData.desc, sceneType: 'CASTLE' }
+      );
+
       if (isFirstCastleWin) {
-        const [narrativeText, reactionText] = await Promise.all([
-          generateRaidNarrative(
-            `ヴァルハイト城・${floorInfo.floorName}`,
-            battleData,
-            player,
-            enemy,
-            floorLootText,
-            { locDesc: castleData.desc, sceneType: 'CASTLE' }
-          ),
-          generateFactionReaction(`ヴァルハイト城・${floorInfo.floorName}`, battleData, player, enemy),
-        ]);
-        story = narrativeText;
-        player.pendingFactionStory = reactionText;
-      } else {
-        story = await generateRaidNarrative(
+        await sleep(800);
+        player.pendingFactionStory = await generateFactionReaction(
           `ヴァルハイト城・${floorInfo.floorName}`,
           battleData,
           player,
-          enemy,
-          floorLootText,
-          { locDesc: castleData.desc, sceneType: 'CASTLE' }
+          enemy
         );
       }
 
@@ -358,6 +357,7 @@ ${story1}
     isCapped: isCap1 && loot1Text.includes('破棄'),
     rawDropName: rawDrop1,
   });
+  await sleep(500);
   const story2 = await generateRaidNarrative(loc2.name, battle2, player, enemy2, loot2Text, {
     locDesc: loc2.desc,
     sceneType: 'TWO_STEP',
@@ -707,26 +707,17 @@ ${story}${interludeText}
     else if (locData.isReturn) sceneType = 'RETURN';
     else if (locData.isDrawbridge) sceneType = 'DRAWBRIDGE';
 
-    let story = '';
+    // APIレート制限衝突を防ぐため、直列で第1幕 ➔ 小休止 ➔ 第2幕の順に生成
+    const story = await generateRaidNarrative(locData.name, battleData, player, enemy, lootText, {
+      locDesc: locData.desc,
+      sceneType,
+      isCapped: isCapped && lootText.includes('破棄'),
+      rawDropName,
+    });
+
     if (shouldTriggerFactionReaction) {
-      const [narrativeText, reactionText] = await Promise.all([
-        generateRaidNarrative(locData.name, battleData, player, enemy, lootText, {
-          locDesc: locData.desc,
-          sceneType,
-          isCapped: isCapped && lootText.includes('破棄'),
-          rawDropName,
-        }),
-        generateFactionReaction(locData.name, battleData, player, enemy),
-      ]);
-      story = narrativeText;
-      player.pendingFactionStory = reactionText;
-    } else {
-      story = await generateRaidNarrative(locData.name, battleData, player, enemy, lootText, {
-        locDesc: locData.desc,
-        sceneType,
-        isCapped: isCapped && lootText.includes('破棄'),
-        rawDropName,
-      });
+      await sleep(800);
+      player.pendingFactionStory = await generateFactionReaction(locData.name, battleData, player, enemy);
     }
 
     await savePlayer(player);
