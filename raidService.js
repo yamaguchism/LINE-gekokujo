@@ -44,6 +44,8 @@ function buildRaidQuickReply(player) {
 // ==========================================
 export async function executeCastleRogueStep(lineClient, userId, player) {
   clearAwakenedSixthSlot(player, true);
+  // 前回の未読幕間劇が残っていればクリア
+  player.pendingFactionStory = null;
 
   const castleData = MAP_LOCATIONS['ヴァルハイト城'];
   const nextFloorNum = (player.castleFloor || 0) + 1;
@@ -208,6 +210,7 @@ ${battleData.hint}
 // ==========================================
 export async function executeTwoStepRaid(lineClient, userId, player, routeStr) {
   clearAwakenedSixthSlot(player, true);
+  player.pendingFactionStory = null;
 
   const [step1Key, step2Key] = routeStr.split('>');
   const loc1 = MAP_LOCATIONS[step1Key];
@@ -423,6 +426,9 @@ export async function executeScheduledRaids(lineClient, targetUserId = null, for
       await executeTwoStepRaid(lineClient, userId, player, player.reservedLocation);
       continue;
     }
+
+    // 新規戦闘に入るため、前回の未読幕間劇があればクリアする
+    player.pendingFactionStory = null;
 
     const defaultLoc = (player.chapter >= 3 || player.ch2Step >= 2)
       ? '中立交易区'
