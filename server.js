@@ -365,10 +365,7 @@ ${openingScene}
         userText === '開幕' ||
         userText === 'リセット' ||
         userText === '地図' ||
-        userText === '作戦地図' ||
-        userText === '出撃' ||
-        userText === '行動選択' ||
-        userText === 'メニュー'
+        userText === '作戦地図'
       ) {
         if (userText === '開幕' || userText === 'リセット') {
           player = normalizePlayer(createInitialPlayer(userId, player.leader), userId);
@@ -378,7 +375,7 @@ ${openingScene}
         const curLocName = getCurrentLocationName(player);
         const reservedName = getReservedDisplayName(player.reservedLocation);
         const resNotice = player.reservedLocation ? `（次回予約: 『${reservedName}』）` : '';
-        const minimalText = `📍 現在地：${curLocName} ${resNotice}\n▼ 下のボタンから進軍先を選べ。`;
+        const minimalText = `📍 現在地：${curLocName} ${resNotice}`;
 
         const mapImageUrl = resolveMapImageUrl(player, req);
         const replyMessages = [];
@@ -394,12 +391,33 @@ ${openingScene}
         replyMessages.push({
           type: 'text',
           text: minimalText,
-          quickReply: makeQuickReply(getSmartButtons(player)),
+          quickReply: makeQuickReply(getSmartButtons(player, true)),
         });
 
         await lineClient.replyMessage({
           replyToken: event.replyToken,
           messages: replyMessages,
+        });
+
+      // ------------------------------------------
+      // A-2. 行動変更・出撃・行動選択・メニュー
+      // ------------------------------------------
+      } else if (
+        userText === '行動変更' ||
+        userText === '出撃' ||
+        userText === '行動選択' ||
+        userText === 'メニュー'
+      ) {
+        const curLocName = getCurrentLocationName(player);
+        const reservedName = getReservedDisplayName(player.reservedLocation);
+
+        await lineClient.replyMessage({
+          replyToken: event.replyToken,
+          messages: [{
+            type: 'text',
+            text: `📍 現在地：${curLocName}\n次回予約：『${reservedName}』`,
+            quickReply: makeQuickReply(getSmartButtons(player, true)),
+          }],
         });
 
       // ------------------------------------------
@@ -414,7 +432,7 @@ ${openingScene}
           messages: [{
             type: 'text',
             text: `🔄 出撃予約を解除したぞ。\n📍 現在地：${getCurrentLocationName(player)}\n▼ 新しい進軍先を下から選べ。`,
-            quickReply: makeQuickReply(getSmartButtons(player)),
+            quickReply: makeQuickReply(getSmartButtons(player, true)),
           }],
         });
 
@@ -430,7 +448,7 @@ ${openingScene}
             messages: [{
               type: 'text',
               text: '⚠️ 遠征ルートの指定が不正だ。下のボタンから選び直せ。',
-              quickReply: makeQuickReply(getSmartButtons(player)),
+              quickReply: makeQuickReply(getSmartButtons(player, true)),
             }],
           });
           continue;
@@ -467,7 +485,7 @@ ${openingScene}
             messages: [{
               type: 'text',
               text: '⚠️ 現在はヴァルハイト城の内部にはいないぞ！下のボタンから進軍先を選べ。',
-              quickReply: makeQuickReply(getSmartButtons(player)),
+              quickReply: makeQuickReply(getSmartButtons(player, true)),
             }],
           });
           continue;
@@ -659,7 +677,7 @@ ${openingScene}
             messages: [{
               type: 'text',
               text: '⚠️ 指定された進軍先が見つからないぞ。下のボタンから選べ。',
-              quickReply: makeQuickReply(getSmartButtons(player)),
+              quickReply: makeQuickReply(getSmartButtons(player, true)),
             }],
           });
           continue;
@@ -755,6 +773,27 @@ HP:${player.hp}/${stats.maxHp} | 攻:${stats.atk} | 防:${stats.def}
             messages: [{
               type: 'text',
               text: '⚠️ 現在、過負荷炉の第6スロットは覚醒していないぞ。',
+              quickReply: makeQuickReply(getForgeButtons(player)),
+            }],
+          });
+          continue;
+        }
+
+        if (action === '外す') {
+          if (player.sixthSlot) {
+            const prevInfo = getSlotItemInfo(player.sixthSlot);
+            if (prevInfo) {
+              player.inventory[prevInfo.item] = (player.inventory[prevInfo.item] || 0) + 1;
+            }
+            player.sixthSlot = null;
+            await savePlayer(player);
+          }
+          const stats = calculateEffectiveStats(player);
+          await lineClient.replyMessage({
+            replyToken: event.replyToken,
+            messages: [{
+              type: 'text',
+              text: `🔄 第6スロットの素材を取り外し、基本5枠の状態に戻したぞ。\n実効能力: 攻${stats.atk} / 防${stats.def} / 会心${(stats.critRate * 100).toFixed(0)}% / 回避${(stats.dodgeRate * 100).toFixed(0)}%`,
               quickReply: makeQuickReply(getForgeButtons(player)),
             }],
           });
@@ -1036,8 +1075,8 @@ HP:${player.hp}/${stats.maxHp} | 攻:${stats.atk} | 防:${stats.def}
           replyToken: event.replyToken,
           messages: [{
             type: 'text',
-            text: `📍 現在地：${getCurrentLocationName(player)}\n次回予約：『${getReservedDisplayName(player.reservedLocation)}』\n▼ 下のボタンから行動を選択せよ。（開幕ストーリーを見る場合は『プロローグ』と送信）`,
-            quickReply: makeQuickReply(getSmartButtons(player)),
+            text: `📍 現在地：${getCurrentLocationName(player)}\n次回予約：『${getReservedDisplayName(player.reservedLocation)}』`,
+            quickReply: makeQuickReply(getSmartButtons(player, true)),
           }],
         });
       }

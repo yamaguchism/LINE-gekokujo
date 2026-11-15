@@ -64,7 +64,7 @@ export function getTotalSlots(slots) {
    * 武器5枠強化パズル計算エンジン（黄金比完全準拠 ＋ 独立第6スロット加算対応）
    */
   export function calculateEffectiveStats(player) {
-    const s = player.slots;
+    const s = player.slots || { steel: 0, plate: 0, powder: 0, stone: 0 };
     const sixth = player.sixthSlot; // 'steel' | 'plate' | 'powder' | 'stone' | null
   
     const steelCount = (s.steel || 0) + (sixth === 'steel' ? 1 : 0);
@@ -79,7 +79,8 @@ export function getTotalSlots(slots) {
     const dodgeRate = Math.min(0.40, 0.05 + (powderCount * 0.07));
     const drainRate = Math.min(0.80, stoneCount * 0.20);
   
-    return { maxHp, atk, def, critRate, dodgeRate, drainRate };
+    // server.js 側の stats.vampRate 参照と battleEngine 内の drainRate 参照の両方に完全対応
+    return { maxHp, atk, def, critRate, dodgeRate, drainRate, vampRate: drainRate };
   }
   
   /**
@@ -98,6 +99,10 @@ export function getTotalSlots(slots) {
     let tookExecute = false;
     let hadMiracleDodge = false;
     let hadClutchCrit = false;
+  
+    const s = player.slots || { steel: 0, plate: 0, powder: 0, stone: 0 };
+    const hasPowder = (s.powder || 0) + (player.sixthSlot === 'powder' ? 1 : 0) > 0;
+    const actorLabel = `${player.leader}（${player.name || `${player.leader}班`}）`;
   
     if (options.isDefenseBattle && (player.baseWallLevel || 1) >= 1) {
       const wallDmg = (player.baseWallLevel || 1) * 10;
@@ -134,12 +139,22 @@ export function getTotalSlots(slots) {
         if (isPinch) hadClutchCrit = true;
         const effectiveDef = enemy.def * 0.5;
         pDmg = Math.max(2, Math.floor((stats.atk - effectiveDef) * 1.5));
+  
+        let critActionText = '';
+        if (hasPowder) {
+          critActionText = isPinch
+            ? `🔥【背水の陣・黒火薬一斉誘爆！】絶体絶命の危機から敵の装甲を粉砕する逆転会心撃！`
+            : `💥【黒火薬炸裂・装甲半減貫通】敵の装甲を吹き飛ばす会心の一撃！`;
+        } else {
+          critActionText = isPinch
+            ? `🔥【背水の陣・渾身鉄塊粉砕撃！】絶体絶命の危機から敵の装甲を叩き割る逆転会心撃！`
+            : `💥【剛力粉砕・装甲半減貫通】全身の質量を乗せて敵の装甲を叩き潰す会心の一撃！`;
+        }
+  
         logs.push({
           turn,
-          actor: `${player.leader}（シンジ班）`,
-          action: isPinch
-            ? `🔥【背水の陣・黒火薬一斉誘爆！】絶体絶命の危機から敵の装甲を粉砕する逆転会心撃！`
-            : `💥【黒火薬炸裂・装甲半減貫通】敵の装甲を吹き飛ばす会心の一撃！`,
+          actor: actorLabel,
+          action: critActionText,
           damage: pDmg,
           targetRemainHp: Math.max(0, eHP - pDmg),
         });
@@ -147,7 +162,7 @@ export function getTotalSlots(slots) {
         pDmg = Math.max(1, stats.atk - enemy.def);
         logs.push({
           turn,
-          actor: `${player.leader}（シンジ班）`,
+          actor: actorLabel,
           action: `🗡️ ${player.weapon}による斬撃`,
           damage: pDmg,
           targetRemainHp: Math.max(0, eHP - pDmg),
@@ -158,7 +173,7 @@ export function getTotalSlots(slots) {
       playerTurnCount++;
       eHP -= pDmg;
   
-      // ★修正：先に敵の反射（REFLECT_SHIELD）を処理し、その直後に吸血（DRAIN）で回復する順序に変更
+      // 先に敵の反射（REFLECT_SHIELD）を処理し、その直後に吸血（DRAIN）で回復する順序
       if (enemy.gimmick === 'REFLECT_SHIELD' && enemy.reflectRate && eHP > 0) {
         const rDmg = Math.max(1, Math.floor(pDmg * enemy.reflectRate));
         pHP -= rDmg;
@@ -171,14 +186,14 @@ export function getTotalSlots(slots) {
         });
         if (pHP <= 0) break;
       }
-
+  
       if (stats.drainRate > 0 && pHP > 0) {
-        const stoneCount = (player.slots.stone || 0) + (player.sixthSlot === 'stone' ? 1 : 0);
+        const stoneCount = (s.stone || 0) + (player.sixthSlot === 'stone' ? 1 : 0);
         const drainHeal = Math.max(4 * stoneCount, Math.floor(pDmg * stats.drainRate));
         pHP = Math.min(stats.maxHp, pHP + drainHeal);
         logs.push({
           turn,
-          actor: `${player.leader}（シンジ班）`,
+          actor: actorLabel,
           action: `🩸【魔導石の吸血脈動】敵の生命力を吸い取り HPが ${drainHeal} 回復！`,
           damage: 0,
           targetRemainHp: pHP,
@@ -208,7 +223,9 @@ export function getTotalSlots(slots) {
         logs.push({
           turn,
           actor: enemy.name,
-          action: `💨【黒煙の奇跡回避】火薬の黒煙が敵の目を眩ませ、致命打を完全に躱した！`,
+          action: hasPowder
+            ? `💨【黒煙の緊急回避】火薬の黒煙が敵の目を眩ませ、致命打を紙一重で躱した！`
+            : `💨【紙一重の見切り回避】半歩沈み込み、敵の凶刃を火花とともに逸らして躱した！`,
           damage: 0,
           targetRemainHp: pHP,
         });
@@ -247,8 +264,8 @@ export function getTotalSlots(slots) {
     let hint = '';
     if (!isWin) {
       const avgDamage = totalDamageDealt / (playerTurnCount || 1);
-      const totalEquipped = getTotalSlots(player.slots);
-      const totalPowder = (player.slots.powder || 0) + (player.sixthSlot === 'powder' ? 1 : 0);
+      const totalEquipped = getTotalSlots(s);
+      const totalPowder = (s.powder || 0) + (player.sixthSlot === 'powder' ? 1 : 0);
   
       if (totalEquipped < 5) {
         hint = `💡【敗因分析】武器のスロットが [${totalEquipped}/5枠] しか埋まっていない！「鍛造」で5枠すべて埋めろ！`;

@@ -45,8 +45,8 @@ export function resolveMapImageUrl(player, req) {
   return null;
 }
 
-export function getSmartButtons(player) {
-  if (player.reservedLocation) {
+export function getSmartButtons(player, forceShow = false) {
+  if (player.reservedLocation && !forceShow) {
     return [];
   }
 
