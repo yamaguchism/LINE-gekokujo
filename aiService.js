@@ -1,5 +1,6 @@
 import 'dotenv/config';
 import { GoogleGenAI } from '@google/genai';
+import { TRUMP_ITEMS } from './gameData.js';
 
 // ==========================================
 // Gemini AI 戦記小説＆魔王城幕間劇生成モジュール (aiService.js)
@@ -71,7 +72,7 @@ async function callGeminiWithFallback(prompt) {
 export async function generateRaidNarrative(locationName, battleData, player, enemy, lootText, options = {}) {
   const {
     locDesc = '',
-    sceneType = 'RAID', // 'RAID' | 'BOSS' | 'CHALLENGE' | 'CASTLE' | 'RETURN' | 'DEFENSE' | 'DRAWBRIDGE' | 'TWO_STEP'
+    sceneType = 'RAID', // 'RAID' | 'BOSS' | 'CHALLENGE' | 'CASTLE' | 'RETURN' | 'DEFENSE' | 'DRAWBRIDGE' | 'TWO_STEP' | 'GUERRILLA'
     isCapped = false,
     rawDropName = '',
   } = options;
@@ -87,6 +88,10 @@ export async function generateRaidNarrative(locationName, battleData, player, en
 
     // 戦闘ハイライトの抽出（火薬の有無と矛盾しないよう厳密に分岐）
     const highlights = [];
+    if (battleData.usedTrumpItem && TRUMP_ITEMS[battleData.usedTrumpItem]) {
+      const tInfo = TRUMP_ITEMS[battleData.usedTrumpItem];
+      highlights.push(`強奪しておいた切り札『${tInfo.name}』をここぞの場面で炸裂させ、敵の厄介な戦術（${tInfo.shortDesc}）を卑劣かつ痛快に無力化した瞬間`);
+    }
     if (battleData.hadMiracleDodge) {
       if (hasPowder) {
         highlights.push('仕込み黒火薬が噴き上げた黒煙に紛れ、敵の致命的な一撃を紙一重で見切って躱した瞬間');
@@ -129,10 +134,15 @@ export async function generateRaidNarrative(locationName, battleData, player, en
 1. 導入：戦場（${locationName}）の視覚・聴覚的な緊張感と、立ち塞がる『${enemy.name}』の圧倒的な威圧感やセリフからいきなり書き始めよ。
 2. 激突：敵の猛攻による肉体の軋み（骨が鳴る音、火花、泥水）と、こちらの『${player.weapon}（${weaponStyle}）』による重く泥臭い応酬を描け。
 3. 決着：${battleData.result === 'WIN' ? '決定打が敵の装甲ごと肉体を叩き潰して崩れ落ちる瞬間と、格上のエリートを泥濘に引きずり下ろした下剋上のカタルシスで締めくくれ。' : '敵の圧倒的な壁（装甲や狂乱の猛撃）に阻まれ、血反吐を吐きながら悔しげに直前の前線拠点へ1歩退却し、武器を鍛え直しての再戦を誓う屈辱の場面で締めくくれ。'}`;
+    } else if (sceneType === 'GUERRILLA') {
+      sceneInstruction = `
+【シーン構成：横取り奇襲作戦（目標：180〜240文字厳守、2段落 / トーン：痛快な漁夫の利・強奪）】
+1. 戦場（${locationName}）を進んでいた『${enemy.name}』の横っ腹へ物陰から奇襲を仕掛け、敵の悲鳴や怒号（セリフ）とともに『${player.weapon}』で護衛を叩き伏せる場面を描け。
+2. 敵が運んでいた特務物資（${lootText}）を根こそぎかっさらい、敵の増援が来る前に砂塵を蹴って撤収する悪党の鮮やかな手際で締めくくれ。`;
     } else if (sceneType === 'DEFENSE') {
       sceneInstruction = `
 【シーン構成：本陣アジト奇襲防衛戦（目標：170〜230文字厳守、2段落 / トーン：冷酷・電撃処刑）】
-長々しい苦戦描写は不要だ。縄張りに土足で踏み込んできた愚かな人間軍を、罠と火力で「手際よくミンチにして身ぐるみ剥がす」スピーディな迎撃劇を描け。
+長々しい苦戦描写は不要だ。縄張りに土足で踏み込んできた愚かな敵部隊を、罠と火力で「手際よくミンチにして身ぐるみ剥がす」スピーディな迎撃劇を描け。
 1. 開幕：夜霧や砂塵を突いて本陣へ接近した『${enemy.name}』を、防壁の迎撃鉄杭が容赦なく串刺しにして出鼻を挫く場面から始めよ。
 2. 処刑：怯んだ敵隊列へ飛び出し、『${player.weapon}』の暴力で一息に粉砕して物資を剥ぎ取る悪党の冷徹な手際で締めくくれ。`;
     } else if (sceneType === 'RETURN') {
@@ -159,12 +169,12 @@ export async function generateRaidNarrative(locationName, battleData, player, en
     }
 
     let lootInstruction = `強奪戦利品: ${lootText}`;
-    if (battleData.result === 'WIN' && isCapped && rawDropName) {
+    if (battleData.result === 'WIN' && isCapped && rawDropName && sceneType !== 'GUERRILLA') {
       lootInstruction = `戦利品状況: 現地で『${rawDropName}』を奪い取ったが、すでに部隊の背嚢（武器庫）が満杯でこれ以上持ち切れず、隊長が舌打ちしながら余った『${rawDropName}』を泥濘へ蹴り捨てた（または荷車ごと叩き壊した）場面を終盤に必ず描け（※「×0を強奪した」とは絶対に書くな）。`;
     }
 
     const enemyPersona = enemy.quote
-      ? `\n敵の人物像・登場セリフ: ${enemy.quote}${enemy.defeatQuote ? `\n敵の断末魔・敗北セリフ: ${enemy.defeatQuote}` : ''}\n（※ボス戦ではこれらのセリフを劇中に組み込め。平時周回ではテンポ優先で省略してよい）`
+      ? `\n敵の人物像・登場セリフ: ${enemy.quote}${enemy.defeatQuote ? `\n敵の断末魔・敗北セリフ: ${enemy.defeatQuote}` : ''}\n（※ボス戦や横取り奇襲戦ではこれらのセリフを劇中に組み込め。平時周回ではテンポ優先で省略してよい）`
       : '';
 
     const prompt = `
@@ -176,7 +186,7 @@ export async function generateRaidNarrative(locationName, battleData, player, en
 背景設定: ${locDesc || '人間軍と魔族が覇権を争う最前線'}
 主人公部隊: ${player.name}（隊長名: ${player.leader} / 主武装: ${player.weapon} [鋼:${s.steel} 板:${s.plate} 火:${s.powder} 石:${s.stone}]）
 武器の特徴: ${weaponStyle}
-※重要：黒火薬スロットが「0」の場合、火薬の爆発や黒煙の描写は絶対に書くな。装備している素材（鋼・板・火薬・石）のうち、実際に数値が1以上のものだけを描写せよ。
+※重要：黒火薬スロットが「0」の場合、火薬の爆発や黒煙の描写は絶対に書くな（ただし切り札『黒煙の目潰し灰袋』を使用した場合の黒灰描写は例外とする）。装備している素材（鋼・板・火薬・石）のうち、実際に数値が1以上のものだけを描写せよ。
 交戦相手: ${enemy.name}（攻撃技: ${enemy.attackName || '通常攻撃'}）${enemyPersona}
 勝敗結果: ${battleData.result}
 ${lootInstruction}
@@ -198,8 +208,8 @@ ${sceneInstruction}
     return await callGeminiWithFallback(prompt);
   } catch (err) {
     console.error('>>> AI実況生成エラー（戦記風定型文へフォールバック）:', err.message);
-    const quoteLine = (isClimax && enemy.quote) ? `${enemy.quote}\n` : '';
-    const defeatLine = (isClimax && battleData.result === 'WIN' && enemy.defeatQuote) ? `\n${enemy.defeatQuote}` : '';
+    const quoteLine = ((isClimax || sceneType === 'GUERRILLA') && enemy.quote) ? `${enemy.quote}\n` : '';
+    const defeatLine = ((isClimax || sceneType === 'GUERRILLA') && battleData.result === 'WIN' && enemy.defeatQuote) ? `\n${enemy.defeatQuote}` : '';
 
     if (battleData.result === 'WIN') {
       if (!isClimax && (sceneType === 'RAID' || sceneType === 'DRAWBRIDGE')) {
@@ -209,7 +219,7 @@ ${sceneInstruction}
         return `【${locationName}】の物陰から飛び出した${player.name}は、迎え撃つ『${enemy.name}』へ『${player.weapon}』を叩き込んだ。鈍い破砕音とともに護衛を蹴散らす。${shortLoot}`;
       }
 
-      const lootPhrase = (isCapped && rawDropName)
+      const lootPhrase = (isCapped && rawDropName && sceneType !== 'GUERRILLA')
         ? `転がった『${rawDropName}』に手を伸ばすが、背嚢はすでに限界まで軋んでいる。隊長は舌打ちして余剰分を蹴り飛ばすと、硝煙のくすぶる戦場を後にした。`
         : `崩れ落ちた敵の傍らから戦利品（${lootText}）を荒々しく剥ぎ取ると、隊長は血と煤に塗れた斧を肩に担ぎ、戦場を後にした。`;
       return `【${locationName}】に荒くれ魔族たちの咆哮が響き渡る。\n${quoteLine}迎え撃つ『${enemy.name}』の猛攻が火花を散らすが、${player.leader}は『${player.weapon}』を渾身の力で振り抜き、敵の防備を力尽くで粉砕した！${defeatLine}\n\n${lootPhrase}`;
@@ -327,12 +337,10 @@ function getStageLoreConfig(locationName, enemyName = '') {
 
 /**
  * 第2幕：ボス撃破時にボタンを押すと開く「魔王城・上層部3派閥の幕間劇」を生成する
- * （全8段階のマトリクスに基づき、裏設定と3人の態度が一切ダブらず段階的に変化する）
  */
 export async function generateFactionReaction(locationName, battleData, player, enemy) {
   const weaponStyle = describeWeaponStyle(player);
 
-  // システム数値（ターンやHP）をAIがそのまま口走らないよう、物語の戦況表現へ事前翻訳して渡す
   let paceDesc = '激しい攻防の末に敵の防衛網を突き崩した真っ向勝負';
   if (battleData.lastTurn <= 3) {
     paceDesc = '開戦からわずか数合の打ち合いで敵を粉砕した電撃的な瞬殺劇';

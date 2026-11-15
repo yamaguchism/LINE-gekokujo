@@ -61,6 +61,22 @@ export function getTotalSlots(slots) {
   }
   
   /**
+   * ボスのギミックに対応する特効切り札キーを返す（リベンジ補正用）
+   */
+  export function getCounterTrumpForBoss(locKey, enemy = {}) {
+    if (enemy.gimmick === 'POISON_GAS' || enemy.gimmick === 'REFLECT_SHIELD') {
+      return 'oil_cloth';
+    }
+    if (locKey === '要塞門' || enemy.gimmick === 'BERSERK' || enemy.gimmick === 'EXECUTE_6T') {
+      return 'ash_bag';
+    }
+    if (locKey === '前哨砦' || enemy.gimmick === 'SUPER_ARMOR' || (enemy.def || 0) >= 18) {
+      return 'acid_bottle';
+    }
+    return 'acid_bottle';
+  }
+  
+  /**
    * 武器5枠強化パズル計算エンジン（黄金比完全準拠 ＋ 独立第6スロット加算対応）
    */
   export function calculateEffectiveStats(player) {
@@ -79,18 +95,18 @@ export function getTotalSlots(slots) {
     const dodgeRate = Math.min(0.40, 0.05 + (powderCount * 0.07));
     const drainRate = Math.min(0.80, stoneCount * 0.20);
   
-    // server.js 側の stats.vampRate 参照と battleEngine 内の drainRate 参照の両方に完全対応
     return { maxHp, atk, def, critRate, dodgeRate, drainRate, vampRate: drainRate };
   }
   
   /**
-   * 8ターン戦闘シミュレーター＆敗因アナライザー
+   * 8ターン戦闘シミュレーター＆敗因アナライザー（切り札アイテム発動対応）
    */
   export function simulateBattle(player, enemy, locKey, options = {}) {
     const stats = calculateEffectiveStats(player);
     const logs = [];
     let pHP = Math.min(player.hp || stats.maxHp, stats.maxHp);
     let eHP = enemy.hp;
+    let effectiveEnemyDef = enemy.def;
     let turn = 1;
     let totalDamageDealt = 0;
     let playerTurnCount = 0;
@@ -99,6 +115,9 @@ export function getTotalSlots(slots) {
     let tookExecute = false;
     let hadMiracleDodge = false;
     let hadClutchCrit = false;
+  
+    const activeTrump = options.trumpItemKey || null;
+    let ashBagUsed = false;
   
     const s = player.slots || { steel: 0, plate: 0, powder: 0, stone: 0 };
     const hasPowder = (s.powder || 0) + (player.sixthSlot === 'powder' ? 1 : 0) > 0;
@@ -116,18 +135,50 @@ export function getTotalSlots(slots) {
       });
     }
   
+    // 切り札開幕発動処理（腐食の酸瓶 ／ 禁呪の絶縁油布）
+    if (activeTrump === 'acid_bottle') {
+      effectiveEnemyDef = Math.floor(enemy.def * 0.6);
+      logs.push({
+        turn: 0,
+        actor: actorLabel,
+        action: `🧪【切り札発動：腐食の酸瓶】強奪した劇薬酸瓶を投げつけ、『${enemy.name}』の重装甲を40%溶解させた！（敵防御 ${enemy.def} ➔ ${effectiveEnemyDef}）`,
+        damage: 0,
+        targetRemainHp: eHP,
+      });
+    } else if (activeTrump === 'oil_cloth') {
+      logs.push({
+        turn: 0,
+        actor: actorLabel,
+        action: `🃏【切り札発動：禁呪の絶縁油布】魔道軍の絶縁油布を武器と外套に巻き付け、毒ガスと反射障壁を完全に遮断した！`,
+        damage: 0,
+        targetRemainHp: eHP,
+      });
+    }
+  
     while (pHP > 0 && eHP > 0 && turn <= 8) {
       if (enemy.gimmick === 'POISON_GAS' && enemy.poisonDamage) {
-        const pDmgFixed = enemy.poisonDamage;
-        pHP -= pDmgFixed;
-        logs.push({
-          turn,
-          actor: enemy.name,
-          action: `🧪【猛毒ガス噴射】濃緑の劇薬ガスが装甲の隙間から肺を侵食！（防御無視 ${pDmgFixed} ダメージ）`,
-          damage: pDmgFixed,
-          targetRemainHp: Math.max(0, pHP),
-        });
-        if (pHP <= 0) break;
+        if (activeTrump === 'oil_cloth') {
+          if (turn === 1) {
+            logs.push({
+              turn,
+              actor: actorLabel,
+              action: `🃏【絶縁油布・防毒遮断】濃緑の猛毒ガスを絶縁油布が完全に弾き返した！（ダメージ 0）`,
+              damage: 0,
+              targetRemainHp: pHP,
+            });
+          }
+        } else {
+          const pDmgFixed = enemy.poisonDamage;
+          pHP -= pDmgFixed;
+          logs.push({
+            turn,
+            actor: enemy.name,
+            action: `🧪【猛毒ガス噴射】濃緑の劇薬ガスが装甲の隙間から肺を侵食！（防御無視 ${pDmgFixed} ダメージ）`,
+            damage: pDmgFixed,
+            targetRemainHp: Math.max(0, pHP),
+          });
+          if (pHP <= 0) break;
+        }
       }
   
       const isPinch = (pHP / stats.maxHp) <= 0.30;
@@ -137,7 +188,7 @@ export function getTotalSlots(slots) {
   
       if (isCritical) {
         if (isPinch) hadClutchCrit = true;
-        const effectiveDef = enemy.def * 0.5;
+        const effectiveDef = effectiveEnemyDef * 0.5;
         pDmg = Math.max(2, Math.floor((stats.atk - effectiveDef) * 1.5));
   
         let critActionText = '';
@@ -159,7 +210,7 @@ export function getTotalSlots(slots) {
           targetRemainHp: Math.max(0, eHP - pDmg),
         });
       } else {
-        pDmg = Math.max(1, stats.atk - enemy.def);
+        pDmg = Math.max(1, stats.atk - effectiveEnemyDef);
         logs.push({
           turn,
           actor: actorLabel,
@@ -175,16 +226,28 @@ export function getTotalSlots(slots) {
   
       // 先に敵の反射（REFLECT_SHIELD）を処理し、その直後に吸血（DRAIN）で回復する順序
       if (enemy.gimmick === 'REFLECT_SHIELD' && enemy.reflectRate && eHP > 0) {
-        const rDmg = Math.max(1, Math.floor(pDmg * enemy.reflectRate));
-        pHP -= rDmg;
-        logs.push({
-          turn,
-          actor: enemy.name,
-          action: `🛡️【神聖反射の荊】神聖盾が打撃の衝撃を跳ね返した！（反射 ${rDmg} ダメージ）`,
-          damage: rDmg,
-          targetRemainHp: Math.max(0, pHP),
-        });
-        if (pHP <= 0) break;
+        if (activeTrump === 'oil_cloth') {
+          if (turn === 1) {
+            logs.push({
+              turn,
+              actor: actorLabel,
+              action: `🃏【絶縁油布・反射吸収】神聖盾の反射衝撃を絶縁油布が完全に吸収・無力化した！（反射ダメージ 0）`,
+              damage: 0,
+              targetRemainHp: pHP,
+            });
+          }
+        } else {
+          const rDmg = Math.max(1, Math.floor(pDmg * enemy.reflectRate));
+          pHP -= rDmg;
+          logs.push({
+            turn,
+            actor: enemy.name,
+            action: `🛡️【神聖反射の荊】神聖盾が打撃の衝撃を跳ね返した！（反射 ${rDmg} ダメージ）`,
+            damage: rDmg,
+            targetRemainHp: Math.max(0, pHP),
+          });
+          if (pHP <= 0) break;
+        }
       }
   
       if (stats.drainRate > 0 && pHP > 0) {
@@ -204,6 +267,20 @@ export function getTotalSlots(slots) {
   
       // 第3章大ボス：6ターン目終了時の防御・回避不能即死ギミック (EXECUTE_6T)
       if (enemy.gimmick === 'EXECUTE_6T' && turn >= 6) {
+        if (activeTrump === 'ash_bag' && !ashBagUsed) {
+          ashBagUsed = true;
+          hadMiracleDodge = true;
+          logs.push({
+            turn,
+            actor: actorLabel,
+            action: `💨【切り札発動：黒煙の目潰し灰袋】聖剣が極大光波を放つ刹那、目潰し灰袋を炸裂させて視界を奪い、即死の断罪光波を完全に空振りさせた！（ダメージ 0）`,
+            damage: 0,
+            targetRemainHp: pHP,
+          });
+          turn++;
+          continue;
+        }
+  
         const execDmg = 999;
         pHP = 0;
         tookExecute = true;
@@ -215,6 +292,24 @@ export function getTotalSlots(slots) {
           targetRemainHp: 0,
         });
         break;
+      }
+  
+      const isSpecialRigidSword = locKey === '要塞門' && (turn === 3 || turn === 6);
+      const isBerserkStrike = enemy.gimmick === 'BERSERK' && eHP <= Math.floor(enemy.hp * 0.5);
+      const isGenericFirstStrike = turn === 1 && locKey !== '要塞門' && enemy.gimmick !== 'BERSERK' && enemy.gimmick !== 'EXECUTE_6T';
+  
+      if (activeTrump === 'ash_bag' && !ashBagUsed && (isSpecialRigidSword || isBerserkStrike || isGenericFirstStrike)) {
+        ashBagUsed = true;
+        hadMiracleDodge = true;
+        logs.push({
+          turn,
+          actor: actorLabel,
+          action: `💨【切り札発動：黒煙の目潰し灰袋】『${enemy.name}』の猛撃に合わせ、目潰しの黒灰を顔面に叩きつけて攻撃を完全に無効化した！（ダメージ 0）`,
+          damage: 0,
+          targetRemainHp: pHP,
+        });
+        turn++;
+        continue;
       }
   
       const isPlayerDodged = Math.random() < stats.dodgeRate;
@@ -233,11 +328,11 @@ export function getTotalSlots(slots) {
         let enemyAtk = enemy.atk;
         let actionDesc = enemy.attackName || '通常攻撃';
   
-        if (locKey === '要塞門' && (turn === 3 || turn === 6)) {
+        if (isSpecialRigidSword) {
           enemyAtk = enemy.specialAtk || 46;
           actionDesc = `⚠️【必殺：断罪の剛剣】身の丈を超える大剣が唸りを上げて振り下ろされる！`;
           tookRigidSword = true;
-        } else if (enemy.gimmick === 'BERSERK' && eHP <= Math.floor(enemy.hp * 0.5)) {
+        } else if (isBerserkStrike) {
           enemyAtk = enemy.atk * 2;
           actionDesc = `🩸【猛将の覚悟・狂乱覚醒！】残りHP半減により鬼神の如く覚醒！攻撃力が2倍（${enemyAtk}）に跳ね上がった渾身の重戦斧！`;
           tookBerserkHit = true;
@@ -270,21 +365,21 @@ export function getTotalSlots(slots) {
       if (totalEquipped < 5) {
         hint = `💡【敗因分析】武器のスロットが [${totalEquipped}/5枠] しか埋まっていない！「鍛造」で5枠すべて埋めろ！`;
       } else if (tookExecute && pHP <= 0) {
-        hint = `💡【敗因分析】6ターン目の即死技『最終断罪宣告（999ダメ）』が発動してしまった！この相手に持久戦は通用しない！『⛏️王国鋼』と『🧨黒火薬』を集中して積み、6ターン以内にHP180を削り切る超火力構成で挑め！`;
+        hint = `💡【敗因分析】6ターン目の即死技『最終断罪宣告（999ダメ）』が発動してしまった！『⛏️王国鋼』と『🧨黒火薬』で6ターン以内に削り切るか、人間軍の補給隊を横取りして『💨黒煙の目潰し灰袋』を奪え！`;
       } else if (enemy.gimmick === 'BERSERK' && tookBerserkHit && pHP <= 0) {
-        hint = `💡【敗因分析】敵のHPが半分を切り『猛将の覚悟（攻撃力2倍：56）』の猛撃で粉砕された！『🛡️装甲板』と『🔮魔導石』で耐久・吸血を固めるか、『🧨黒火薬』の黒煙回避と背水会心で一気に押し切れ！`;
+        hint = `💡【敗因分析】敵のHPが半分を切り『猛将の覚悟（攻撃力2倍：56）』の猛撃で粉砕された！耐久・吸血を固めるか、人間軍の補給隊から『💨黒煙の目潰し灰袋』を横取りして狂乱の一撃を封じろ！`;
       } else if (enemy.gimmick === 'POISON_GAS' && pHP <= 0) {
-        hint = `💡【敗因分析】猛毒ガス（毎T12固定ダメ）に削り殺された！『🔮魔導石』の吸血で毒を相殺するか、『🧨黒火薬』で毒殺される前に速攻で焼き切れ！`;
+        hint = `💡【敗因分析】猛毒ガス（毎T12固定ダメ）に削り殺された！『🔮魔導石』の吸血で毒を相殺するか、魔道軍の実験部隊から『🃏禁呪の絶縁油布』を横取りして毒を無効化しろ！`;
       } else if (enemy.gimmick === 'REFLECT_SHIELD' && pHP <= 0) {
-        hint = `💡【敗因分析】神聖盾の反射ダメージ（30%）と重装甲（防20）に阻まれた！『🔮魔導石』を2〜3個積んで反射を上回る吸血（40%〜60%）を確保し、残りを『⛏️鋼』で固めて削り勝て！`;
+        hint = `💡【敗因分析】神聖盾の反射ダメージ（30%）と重装甲（防20）に阻まれた！『🔮魔導石』を2〜3個積んで吸血で上回るか、魔道軍の実験部隊から『🃏禁呪の絶縁油布』を横取りして反射盾を封じろ！`;
       } else if (enemy.gimmick === 'SUPER_ARMOR' && avgDamage <= 4) {
-        hint = `💡【敗因分析】対魔神聖巨像アークエンゼルの装甲（防御25）が分厚すぎる！『🧨黒火薬』の装甲半減貫通会心を叩き込むか、『⛏️鋼』を限界まで積め！`;
+        hint = `💡【敗因分析】対魔神聖巨像アークエンゼルの装甲（防御25）が分厚すぎる！『🧨黒火薬』の貫通会心を狙うか、貴族派の輸送隊から『🧪腐食の酸瓶』を横取りして装甲を溶かせ！`;
       } else if (totalPowder >= 4) {
         hint = `💡【敗因分析】『🧨黒火薬』を詰め込みすぎて基礎打点と装甲が脆い！芯となる『⛏️王国鋼』や『🛡️装甲板』を混ぜろ！`;
       } else if (avgDamage <= 3) {
-        hint = `💡【敗因分析】敵の装甲（防御${enemy.def}）が厚くて刃が通っていない！『⛏️王国鋼』を増やして基礎攻撃力を引き上げろ！`;
+        hint = `💡【敗因分析】敵の装甲（防御${enemy.def}）が厚くて刃が通っていない！『⛏️王国鋼』を増やすか、貴族派の輸送隊から『🧪腐食の酸瓶』を横取りして装甲を溶かせ！`;
       } else if (locKey === '要塞門' && tookRigidSword && pHP <= 0) {
-        hint = `💡【敗因分析】ロシュの必殺『断罪の剛剣（攻46）』で粉砕された！『🛡️装甲板』を混ぜて防御を固めろ！`;
+        hint = `💡【敗因分析】ロシュの必殺『断罪の剛剣（攻46）』で粉砕された！『🛡️装甲板』を混ぜて防御を固めるか、人間軍の補給隊から『💨黒煙の目潰し灰袋』を横取りして必殺剣を空振りさせろ！`;
       } else if (lastTurn <= 4 && pHP <= 0) {
         hint = `💡【敗因分析】被ダメージが重すぎて早期壊滅した！出撃前に「回復」でHPを満タンにし、『🛡️装甲板』で防御を固めろ！`;
       } else if (lastTurn >= 8 && eHP > 0 && pHP > 0) {
@@ -306,5 +401,6 @@ export function getTotalSlots(slots) {
       remainEnemyHp: Math.max(0, eHP),
       hadMiracleDodge,
       hadClutchCrit,
+      usedTrumpItem: activeTrump,
     };
   }

@@ -547,7 +547,6 @@ export const DEFENSE_ENEMIES = [
     atk: 21,
     def: 9,
     attackName: 'クロスボウ斉射',
-    // 人間軍の通常襲撃では魔王城のシーンは出さない（戦記のみで完結）
   },
   {
     name: '魔道軍の粛清部隊・黒鉄重装兵',
@@ -570,3 +569,85 @@ export const DEFENSE_ENEMIES = [
     },
   },
 ];
+
+// ==========================================
+// 横取り襲撃（ゲリラ）用・外道使い切りアイテム＆襲撃部隊定義
+// ==========================================
+export const TRUMP_ITEMS = {
+  oil_cloth: {
+    key: 'oil_cloth',
+    name: '禁呪の絶縁油布',
+    icon: '🃏',
+    shortDesc: 'ボスの猛毒ガス・反射ダメージを完全無効化',
+    faction: '魔道軍の実験部隊',
+  },
+  acid_bottle: {
+    key: 'acid_bottle',
+    name: '腐食の酸瓶',
+    icon: '🧪',
+    shortDesc: '開幕にボスの装甲(防御力)を40%溶解',
+    faction: '貴族派の秘密輸送隊',
+  },
+  ash_bag: {
+    key: 'ash_bag',
+    name: '黒煙の目潰し灰袋',
+    icon: '💨',
+    shortDesc: 'ボスの必殺大技・狂乱撃・即死剣を1回完全回避',
+    faction: '人間王国の先遣補給隊',
+  },
+};
+
+export const GUERRILLA_RAID_TYPES = {
+  oil_cloth: {
+    typeKey: 'oil_cloth',
+    factionName: '魔道軍の実験部隊',
+    enemyName: 'ゼノビア直轄・魔道実験輸送隊',
+    attackName: '魔導障壁パルス',
+    quote: '「貴様らガルガン軍の野良犬か！？ この『禁呪の絶縁油布』はゼノビア様の大聖堂攻略用の特務物資だ、手を触れるな！」',
+    defeatQuote: '「くそっ、野蛮な鉄塊め……！ 絶縁油布の梱包を奪われた、退却しろ！」',
+  },
+  acid_bottle: {
+    typeKey: 'acid_bottle',
+    factionName: '貴族派の秘密輸送隊',
+    enemyName: 'ヴァルガス私兵・貴族派秘密輸送隊',
+    attackName: '白銀細剣の連突き',
+    quote: '「無礼者め！ ヴァルガス卿が重装騎士対策に調達された『腐食の酸瓶』を横取りする気か！」',
+    defeatQuote: '「ひぃっ！ 酸瓶の木箱は置いていくから、命だけは助けてくれぇぇ！」',
+  },
+  ash_bag: {
+    typeKey: 'ash_bag',
+    factionName: '人間王国の先遣補給隊',
+    enemyName: '人間王国・特務先遣輜重隊',
+    attackName: '護衛銃槍の斉射',
+    quote: '「魔族の奇襲だ！ 前線の将軍閣下に届ける特製の『黒煙灰袋』を絶対に渡すな！」',
+    defeatQuote: '「ぐわっ……！ 荷車がひっくり返ったぞ、退け、退けぇぇっ！」',
+  },
+};
+
+/**
+ * プレイヤーの進行章（1〜3章）に合わせて適正スケーリングされたゲリラ敵データを返す
+ */
+export function getGuerrillaEnemy(typeKey, chapter = 1) {
+  const base = GUERRILLA_RAID_TYPES[typeKey] || GUERRILLA_RAID_TYPES.acid_bottle;
+  const ch = Math.max(1, Math.min(3, chapter || 1));
+
+  // 各章の通常雑魚よりわずかに手応えがある程度の適正バランス
+  const scaleMap = {
+    1: { hp: 62, atk: 21, def: 9 },
+    2: { hp: 74, atk: 25, def: 12 },
+    3: { hp: 86, atk: 28, def: 14 },
+  };
+  const stats = scaleMap[ch];
+
+  return {
+    name: base.enemyName,
+    hp: stats.hp,
+    atk: stats.atk,
+    def: stats.def,
+    attackName: base.attackName,
+    quote: base.quote,
+    defeatQuote: base.defeatQuote,
+    isGuerrilla: true,
+    guerrillaTypeKey: base.typeKey,
+  };
+}

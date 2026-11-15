@@ -1,6 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import { getTotalSlots } from './battleEngine.js';
+import { TRUMP_ITEMS } from './gameData.js';
 
 // ==========================================
 // UI生成（QuickReplyボタン・地図画像URL解決）モジュール
@@ -43,6 +44,16 @@ export function resolveMapImageUrl(player, req) {
     }
   }
   return null;
+}
+
+export function getBossTrumpConfirmButtons(locKey, trumpKey) {
+  const t = TRUMP_ITEMS[trumpKey];
+  const useLabel = t ? `${t.icon} ${t.name}を使う` : '🃏 切り札を使う';
+  return [
+    { label: useLabel, text: `切り札出撃：${locKey}：ON` },
+    { label: '⚔️ 切り札を温存して挑む', text: `切り札出撃：${locKey}：OFF` },
+    { label: '↩️ 進軍先を選び直す', text: '行動変更' },
+  ];
 }
 
 export function getSmartButtons(player, forceShow = false) {
@@ -183,6 +194,16 @@ export function getSmartButtons(player, forceShow = false) {
     buttons.push({ label: '⛺ アジトへ帰還(略奪&全快)', text: '出撃：帰還' });
   } else {
     buttons.push({ label: '🏰 アジト強化', text: 'アジト強化' });
+  }
+
+  // ゲリラ発生中の拠点ボタンに ⚡ マークを付与
+  if (player.activeGuerilla && player.activeGuerilla.remainingTurns > 0) {
+    const gLoc = player.activeGuerilla.location;
+    for (const btn of buttons) {
+      if (btn.text === `出撃：${gLoc}` && !btn.label.includes('⚡')) {
+        btn.label = `⚡${btn.label}`;
+      }
+    }
   }
 
   return buttons;

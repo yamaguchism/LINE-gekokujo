@@ -2,7 +2,7 @@ import 'dotenv/config';
 import fs from 'fs';
 import path from 'path';
 import { createClient } from '@supabase/supabase-js';
-import { MAP_LOCATIONS } from './gameData.js';
+import { MAP_LOCATIONS, TRUMP_ITEMS } from './gameData.js';
 import { getBaseName } from './battleEngine.js';
 
 // ==========================================
@@ -57,6 +57,10 @@ export function createInitialPlayer(userId, displayName = 'シンジ') {
     slots: { steel: 2, plate: 2, powder: 0, stone: 0 },
     awakenedBoss: null,
     sixthSlot: null,
+    trumpItem: null,
+    useTrumpItem: false,
+    activeGuerilla: null,
+    revengeTarget: null,
     chapter: 1,
     ch1Step: 0,
     ch2Step: 0,
@@ -110,6 +114,10 @@ export function normalizePlayer(p, userId) {
   if (p.baseFurnaceLevel === undefined) p.baseFurnaceLevel = 0;
   if (p.awakenedBoss === undefined) p.awakenedBoss = null;
   if (p.sixthSlot === undefined) p.sixthSlot = null;
+  if (p.trumpItem === undefined) p.trumpItem = null;
+  if (p.useTrumpItem === undefined) p.useTrumpItem = false;
+  if (p.activeGuerilla === undefined) p.activeGuerilla = null;
+  if (p.revengeTarget === undefined) p.revengeTarget = null;
   if (!p.bossWins) p.bossWins = {};
   if (p.castleFloor === undefined) p.castleFloor = 0;
   if (!Array.isArray(p.castleLoot)) p.castleLoot = [];
@@ -249,6 +257,15 @@ export function getSlotItemInfo(slotKey) {
     stone: { item: '魔導石', label: '🔮魔導石(攻+3/吸血+20%/HP-6%)' },
   };
   return map[slotKey] || null;
+}
+
+export function getTrumpItemDisplay(player) {
+  if (!player.trumpItem || !TRUMP_ITEMS[player.trumpItem]) {
+    return 'なし';
+  }
+  const t = TRUMP_ITEMS[player.trumpItem];
+  const state = player.useTrumpItem ? '【次戦ボスで使用ON】' : '（温存中）';
+  return `${t.icon}${t.name}${state} - ${t.shortDesc}`;
 }
 
 export function clearAwakenedSixthSlot(player, returnUnusedMaterial = true) {

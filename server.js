@@ -5,7 +5,11 @@ import cron from 'node-cron';
 import fs from 'fs';
 import path from 'path';
 
-import { MAP_LOCATIONS } from './gameData.js';
+import {
+  MAP_LOCATIONS,
+  TRUMP_ITEMS,
+  GUERRILLA_RAID_TYPES,
+} from './gameData.js';
 import {
   getTotalSlots,
   getBaseName,
@@ -19,6 +23,7 @@ import {
   savePlayer,
   getOrCreatePlayer,
   getSlotItemInfo,
+  getTrumpItemDisplay,
   getCurrentLocationName,
   getReservedDisplayName,
   getMaterialCap,
@@ -29,11 +34,15 @@ import {
 import {
   makeQuickReply,
   resolveMapImageUrl,
+  getBossTrumpConfirmButtons,
   getSmartButtons,
   getForgeButtons,
   getBaseUpgradeButtons,
 } from './uiService.js';
-import { executeScheduledRaids } from './raidService.js';
+import {
+  executeScheduledRaids,
+  trySpawnGuerrillaRaid,
+} from './raidService.js';
 
 const channelAccessToken = process.env.LINE_CHANNEL_ACCESS_TOKEN || process.env.CHANNEL_ACCESS_TOKEN;
 const channelSecret = process.env.LINE_CHANNEL_SECRET || process.env.CHANNEL_SECRET;
@@ -52,6 +61,21 @@ const lineClient = new MessagingApiClient({
 const app = express();
 
 app.use('/public', express.static(path.resolve('public')));
+
+// ==========================================
+// ゲリラ出現情報フォーマットヘルパー（1行表示用）
+// ==========================================
+function formatActiveGuerrillaLine(player) {
+  if (!player.activeGuerilla || player.activeGuerilla.remainingTurns <= 0) {
+    return '';
+  }
+  const g = player.activeGuerilla;
+  const locName = MAP_LOCATIONS[g.location]?.name || g.location;
+  const gType = GUERRILLA_RAID_TYPES[g.typeKey];
+  const tItem = TRUMP_ITEMS[g.typeKey];
+  if (!gType || !tItem) return '';
+  return `\n⚡ 襲撃情報：『${locName}』に${gType.factionName}（残${g.remainingTurns}行動 / ${tItem.icon}${tItem.name}）`;
+}
 
 // ==========================================
 // 定時進軍の二重発火防止ロック機構（内蔵Cron・外部Cron共通ガード）
@@ -359,7 +383,7 @@ ${openingScene}
       }
 
       // ------------------------------------------
-      // A. 開幕・リセット・地図・行動選択メニュー
+      // A. 開幕・リセット・地図・作戦地図
       // ------------------------------------------
       if (
         userText === '開幕' ||
@@ -375,7 +399,8 @@ ${openingScene}
         const curLocName = getCurrentLocationName(player);
         const reservedName = getReservedDisplayName(player.reservedLocation);
         const resNotice = player.reservedLocation ? `（次回予約: 『${reservedName}』）` : '';
-        const minimalText = `📍 現在地：${curLocName} ${resNotice}`;
+        const gLine = formatActiveGuerrillaLine(player);
+        const minimalText = `📍 現在地：${curLocName} ${resNotice}${gLine}`;
 
         const mapImageUrl = resolveMapImageUrl(player, req);
         const replyMessages = [];
@@ -410,12 +435,13 @@ ${openingScene}
       ) {
         const curLocName = getCurrentLocationName(player);
         const reservedName = getReservedDisplayName(player.reservedLocation);
+        const gLine = formatActiveGuerrillaLine(player);
 
         await lineClient.replyMessage({
           replyToken: event.replyToken,
           messages: [{
             type: 'text',
-            text: `📍 現在地：${curLocName}\n次回予約：『${reservedName}』`,
+            text: `📍 現在地：${curLocName}\n次回予約：『${reservedName}』${gLine}`,
             quickReply: makeQuickReply(getSmartButtons(player, true)),
           }],
         });
@@ -425,6 +451,7 @@ ${openingScene}
       // ------------------------------------------
       } else if (userText === '予約解除') {
         player.reservedLocation = null;
+        player.useTrumpItem = false;
         await savePlayer(player);
 
         await lineClient.replyMessage({
@@ -455,6 +482,7 @@ ${openingScene}
         }
 
         player.reservedLocation = `${step1}>${step2}`;
+        player.useTrumpItem = false;
         await savePlayer(player);
 
         const n1 = MAP_LOCATIONS[step1].name;
@@ -505,6 +533,7 @@ ${openingScene}
           player.castleFloor = 0;
           player.castleLoot = [];
           player.reservedLocation = null;
+          player.useTrumpItem = false;
           player.currentLocation = '跳ね橋';
           await savePlayer(player);
 
@@ -528,6 +557,7 @@ ${openingScene}
         }
 
         player.reservedLocation = '城郭：突撃';
+        player.useTrumpItem = false;
         await savePlayer(player);
 
         const nextFloorNum = player.castleFloor + 1;
@@ -651,7 +681,54 @@ ${openingScene}
         });
 
       // ------------------------------------------
-      // D. 出撃予約（通常拠点・関門ボス）
+      // D-0. ボス戦・切り札使用確認からの出撃予約確定（切り札出撃：拠点：ON/OFF）
+      // ------------------------------------------
+      } else if (userText.startsWith('切り札出撃：')) {
+        const parts = userText.split('：');
+        const targetKey = (parts[1] || '').trim();
+        const mode = (parts[2] || 'OFF').trim();
+
+        if (!targetKey || !MAP_LOCATIONS[targetKey]) {
+          await lineClient.replyMessage({
+            replyToken: event.replyToken,
+            messages: [{
+              type: 'text',
+              text: '⚠️ 指定された進軍先が見つからないぞ。下のボタンから選べ。',
+              quickReply: makeQuickReply(getSmartButtons(player, true)),
+            }],
+          });
+          continue;
+        }
+
+        const useTrump = mode === 'ON' && Boolean(player.trumpItem);
+        player.reservedLocation = targetKey;
+        player.useTrumpItem = useTrump;
+        await savePlayer(player);
+
+        const loc = MAP_LOCATIONS[targetKey];
+        const stats = calculateEffectiveStats(player);
+        const tObj = player.trumpItem ? TRUMP_ITEMS[player.trumpItem] : null;
+        const trumpStatusLine = tObj
+          ? `\n・切り札設定：${useTrump ? `🔥『${tObj.icon}${tObj.name}』を投入する！` : `🔒『${tObj.icon}${tObj.name}』を温存して挑む`}`
+          : '';
+
+        await lineClient.replyMessage({
+          replyToken: event.replyToken,
+          messages: [{
+            type: 'text',
+            text:
+`⚔️【出撃予約完了：『${loc.name}』】
+・作戦内容：${loc.desc || '敵陣強襲・物資略奪'}${trumpStatusLine}
+・現在地：${getCurrentLocationName(player)}
+・部隊戦力：HP${player.hp}/${stats.maxHp}（攻${stats.atk} / 防${stats.def}）
+
+⏰ 次の定時（8:00 / 12:00 / 20:00）、または下の『⚡ 今すぐ決行』で進軍を開始するぞ！`,
+            quickReply: makeQuickReply(getSmartButtons(player)),
+          }],
+        });
+
+      // ------------------------------------------
+      // D. 出撃予約（通常拠点・横取り奇襲・関門ボス）
       // ------------------------------------------
       } else if (
         userText.startsWith('出撃：') ||
@@ -683,11 +760,46 @@ ${openingScene}
           continue;
         }
 
+        const loc = MAP_LOCATIONS[matchedKey];
+
+        // 切り札所持中にボス拠点（関門ボス・大霊廟）を選択した場合、使う/使わないの確認ボタンを出す
+        if (loc.isBoss && player.trumpItem && TRUMP_ITEMS[player.trumpItem]) {
+          const tObj = TRUMP_ITEMS[player.trumpItem];
+          await lineClient.replyMessage({
+            replyToken: event.replyToken,
+            messages: [{
+              type: 'text',
+              text:
+`🃏【決戦前の切り札確認：『${loc.name}』】
+現在、懐には横取りした切り札『${tObj.icon}${tObj.name}』がある。
+・効果：${tObj.shortDesc}
+
+この強敵との戦いで切り札を投入するか？`,
+              quickReply: makeQuickReply(getBossTrumpConfirmButtons(matchedKey, player.trumpItem)),
+            }],
+          });
+          continue;
+        }
+
         player.reservedLocation = matchedKey;
+        player.useTrumpItem = false;
         await savePlayer(player);
 
-        const loc = MAP_LOCATIONS[matchedKey];
         const stats = calculateEffectiveStats(player);
+        const isGuerrillaTarget = Boolean(
+          player.activeGuerilla &&
+          player.activeGuerilla.remainingTurns > 0 &&
+          player.activeGuerilla.location === matchedKey
+        );
+
+        let guerrillaPlanLine = '';
+        if (isGuerrillaTarget) {
+          const gType = GUERRILLA_RAID_TYPES[player.activeGuerilla.typeKey];
+          const tItem = TRUMP_ITEMS[player.activeGuerilla.typeKey];
+          if (gType && tItem) {
+            guerrillaPlanLine = `\n・⚡横取り標的：${gType.factionName}（戦利品：${tItem.icon}${tItem.name}）`;
+          }
+        }
 
         await lineClient.replyMessage({
           replyToken: event.replyToken,
@@ -695,7 +807,7 @@ ${openingScene}
             type: 'text',
             text:
 `⚔️【出撃予約完了：『${loc.name}』】
-・作戦内容：${loc.desc || '敵陣強襲・物資略奪'}
+・作戦内容：${loc.desc || '敵陣強襲・物資略奪'}${guerrillaPlanLine}
 ・現在地：${getCurrentLocationName(player)}
 ・部隊戦力：HP${player.hp}/${stats.maxHp}（攻${stats.atk} / 防${stats.def}）
 
@@ -705,8 +817,22 @@ ${openingScene}
         });
 
       // ------------------------------------------
-      // E. テスト即時決行 ＆ テスト防衛戦
+      // E. テスト即時決行 ＆ テスト防衛戦 ＆ テストゲリラ発生
       // ------------------------------------------
+      } else if (userText === 'テストゲリラ' || userText === 'ゲリラ発生') {
+        player.activeGuerilla = null;
+        const notice = trySpawnGuerrillaRaid(player, true);
+        await savePlayer(player);
+
+        await lineClient.replyMessage({
+          replyToken: event.replyToken,
+          messages: [{
+            type: 'text',
+            text: notice || '⚠️ ゲリラの発生に失敗したぞ。',
+            quickReply: makeQuickReply(getSmartButtons(player, true)),
+          }],
+        });
+
       } else if (userText.includes('即時決行') || userText.includes('テスト防衛戦')) {
         const isDef = userText.includes('テスト防衛戦');
         await lineClient.replyMessage({
@@ -1015,12 +1141,14 @@ HP:${player.hp}/${stats.maxHp} | 攻:${stats.atk} | 防:${stats.def}
         const s = player.slots;
         const curLoc = getCurrentLocationName(player);
         const resName = getReservedDisplayName(player.reservedLocation);
+        const gLine = formatActiveGuerrillaLine(player);
 
         const statusText =
 `📋【${player.name}・現在の陣況報告】
 📍 現在地：${curLoc}
-🎯 次回予約：${resName}
+🎯 次回予約：${resName}${gLine}
 ❤️ 部隊HP：${player.hp} / ${stats.maxHp}
+🃏 切り札：${getTrumpItemDisplay(player)}
 
 🪓 主武装：${player.weapon}
 ・溶接枠（${getTotalSlots(s)}/5）：⛏️鋼${s.steel} / 🛡️板${s.plate} / 🧨火${s.powder} / 🔮石${s.stone}
@@ -1071,11 +1199,12 @@ HP:${player.hp}/${stats.maxHp} | 攻:${stats.atk} | 防:${stats.def}
       // K. デフォルト応答（未知のテキスト入力時）
       // ------------------------------------------
       } else {
+        const gLine = formatActiveGuerrillaLine(player);
         await lineClient.replyMessage({
           replyToken: event.replyToken,
           messages: [{
             type: 'text',
-            text: `📍 現在地：${getCurrentLocationName(player)}\n次回予約：『${getReservedDisplayName(player.reservedLocation)}』`,
+            text: `📍 現在地：${getCurrentLocationName(player)}\n次回予約：『${getReservedDisplayName(player.reservedLocation)}』${gLine}`,
             quickReply: makeQuickReply(getSmartButtons(player, true)),
           }],
         });
