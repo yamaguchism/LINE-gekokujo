@@ -196,12 +196,24 @@ export function getSmartButtons(player, forceShow = false) {
     buttons.push({ label: '🏰 アジト強化', text: 'アジト強化' });
   }
 
-  // ゲリラ発生中の拠点ボタンに ⚡ マークを付与
-  if (player.activeGuerilla && player.activeGuerilla.remainingTurns > 0) {
-    const gLoc = player.activeGuerilla.location;
+  // ゲリラ拠点のボタン装飾（予告中は ⏳、開戦中は ⚡ を付与）
+  if (
+    player.activeGuerilla &&
+    ((player.activeGuerilla.waitTurns || 0) > 0 || player.activeGuerilla.remainingTurns > 0)
+  ) {
+    const g = player.activeGuerilla;
+    const gLoc = g.location;
+    const isWaiting = (g.waitTurns || 0) > 0;
+    const hourHint = g.startHourText || '次回';
+
     for (const btn of buttons) {
-      if (btn.text === `出撃：${gLoc}` && !btn.label.includes('⚡')) {
-        btn.label = `⚡${btn.label}`;
+      if (btn.text === `出撃：${gLoc}`) {
+        if (isWaiting) {
+          const basePart = btn.label.split(/[（(]/)[0].trim();
+          btn.label = `⏳${basePart}(${hourHint}〜)`;
+        } else if (!btn.label.startsWith('⚡')) {
+          btn.label = `⚡${btn.label}`;
+        }
       }
     }
   }

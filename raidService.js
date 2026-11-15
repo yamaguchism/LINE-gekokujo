@@ -48,6 +48,40 @@ import {
   }
   
   /**
+   * 現在時刻（JST）を基準に、今後の定時進軍枠（8:00 / 12:00 / 20:00）のリストを返す
+   */
+  export function getUpcomingScheduleSlots(count = 6) {
+    const baseUtcMs = Date.now() + 10 * 60 * 1000;
+    const jstOffsetMs = 9 * 60 * 60 * 1000;
+    const baseJstDate = new Date(baseUtcMs + jstOffsetMs);
+  
+    const baseYear = baseJstDate.getUTCFullYear();
+    const baseMonth = baseJstDate.getUTCMonth();
+    const baseDay = baseJstDate.getUTCDate();
+  
+    const scheduleHours = [8, 12, 20];
+    const slots = [];
+  
+    for (let dayOffset = 0; dayOffset <= 4 && slots.length < count; dayOffset++) {
+      for (const hr of scheduleHours) {
+        const slotJstMs = Date.UTC(baseYear, baseMonth, baseDay + dayOffset, hr, 0, 0);
+        if (slotJstMs > baseUtcMs + jstOffsetMs) {
+          const d = new Date(slotJstMs);
+          const m = d.getUTCMonth() + 1;
+          const day = d.getUTCDate();
+          const h = d.getUTCHours();
+          slots.push({
+            fullLabel: `${m}/${day} ${h}:00`,
+            hourLabel: `${h}:00`,
+          });
+          if (slots.length >= count) break;
+        }
+      }
+    }
+    return slots;
+  }
+  
+  /**
    * 現在の章の通常略奪エリア一覧を返す
    */
   function getChapterNormalLocations(player) {
@@ -62,10 +96,14 @@ import {
   }
   
   /**
-   * ゲリラ未発生時に25%の確率で新規ゲリラを発生させる（リベンジ65%補正対応）
+   * ゲリラ未発生時に25%の確率で新規ゲリラを発生させる
+   * 完全ランダム型：パターンB（事前予告型 70%）／ パターンA（即開戦型 30%）
    */
-  export function trySpawnGuerrillaRaid(player, forceSpawn = false) {
-    if (player.activeGuerilla && player.activeGuerilla.remainingTurns > 0) {
+  export function trySpawnGuerrillaRaid(player, forceSpawn = false, forcedPattern = null) {
+    if (
+      player.activeGuerilla &&
+      ((player.activeGuerilla.waitTurns || 0) > 0 || player.activeGuerilla.remainingTurns > 0)
+    ) {
       return null;
     }
   
@@ -93,33 +131,69 @@ import {
       chosenType = allTypes[Math.floor(Math.random() * allTypes.length)];
     }
   
+    // 完全ランダム振り分け（パターンB：事前予告 70% / パターンA：即開戦 30%）
+    let isPatternB = Math.random() < 0.70;
+    if (forcedPattern === 'A') isPatternB = false;
+    if (forcedPattern === 'B') isPatternB = true;
+  
+    const slots = getUpcomingScheduleSlots(5);
+    const startSlot = isPatternB ? (slots[1] || slots[0]) : slots[0];
+    const endSlot = isPatternB ? (slots[3] || slots[2]) : (slots[2] || slots[1]);
+  
+    const startTimeText = startSlot ? startSlot.fullLabel : '次回定時';
+    const endTimeText = endSlot ? endSlot.fullLabel : '翌定時';
+    const startHourText = startSlot ? startSlot.hourLabel : '次回';
+  
     player.activeGuerilla = {
       location: chosenLoc,
       typeKey: chosenType,
+      pattern: isPatternB ? 'B' : 'A',
+      waitTurns: isPatternB ? 1 : 0,
       remainingTurns: 3,
+      startTimeText,
+      endTimeText,
+      startHourText,
     };
   
     const locName = MAP_LOCATIONS[chosenLoc]?.name || chosenLoc;
     const gType = GUERRILLA_RAID_TYPES[chosenType];
     const tItem = TRUMP_ITEMS[chosenType];
   
-    return `🦅【密偵の急報】『${locName}』に${gType.factionName}が出現！（残り3行動有効 / 戦利品：${tItem.icon}${tItem.name}）`;
+    if (isPatternB) {
+      return `🦅【密偵の急報】『${locName}』を${gType.factionName}が襲撃する計画を察知！\n⏰ 襲撃予定：${startTimeText} 〜 ${endTimeText}（戦利品：${tItem.icon}${tItem.name}）`;
+    }
+    return `🦅【密偵の急報】『${locName}』にて${gType.factionName}が交戦を開始！\n⏰ 出現期間：${startTimeText} 〜 ${endTimeText}（戦利品：${tItem.icon}${tItem.name}）`;
   }
   
   /**
-   * ゲリラ対象外の行動を取った際、残り有効枠を1減らす
+   * ゲリラ対象外の行動を取った際、待機枠または残り有効枠を1進める
    */
   function tickActiveGuerrilla(player) {
     if (!player.activeGuerilla) return '';
-    player.activeGuerilla.remainingTurns -= 1;
-    if (player.activeGuerilla.remainingTurns <= 0) {
-      const expiredLoc = MAP_LOCATIONS[player.activeGuerilla.location]?.name || player.activeGuerilla.location;
-      player.activeGuerilla = null;
-      return `\n（※『${expiredLoc}』で目撃されていた襲撃部隊は撤収したようだ）`;
+    const g = player.activeGuerilla;
+    const stayLoc = MAP_LOCATIONS[g.location]?.name || g.location;
+    const gType = GUERRILLA_RAID_TYPES[g.typeKey];
+    const tItem = TRUMP_ITEMS[g.typeKey];
+    const timeRange = (g.startTimeText && g.endTimeText)
+      ? `${g.startTimeText} 〜 ${g.endTimeText}`
+      : '現在出現中';
+  
+    // パターンBの開戦待ち（予告期間）の消化
+    if ((g.waitTurns || 0) > 0) {
+      g.waitTurns -= 1;
+      if (g.waitTurns <= 0) {
+        return `\n⚡【襲撃開始！】予告されていた『${stayLoc}』に${gType ? gType.factionName : '敵襲撃部隊'}が出現したぞ！（期間：${timeRange} / 戦利品：${tItem ? `${tItem.icon}${tItem.name}` : '切り札'}）`;
+      }
+      return `\n⏳【襲撃予告】『${stayLoc}』への${gType ? gType.factionName : '敵部隊'}襲撃は【${timeRange}】だ（戦利品：${tItem ? `${tItem.icon}${tItem.name}` : '切り札'}）`;
     }
-    const stayLoc = MAP_LOCATIONS[player.activeGuerilla.location]?.name || player.activeGuerilla.location;
-    const tItem = TRUMP_ITEMS[player.activeGuerilla.typeKey];
-    return `\n⚡【襲撃情報継続中】『${stayLoc}』に敵部隊駐留中（残り${player.activeGuerilla.remainingTurns}行動 / ${tItem.icon}${tItem.name}）`;
+  
+    // 開戦後の有効期間カウントダウン
+    g.remainingTurns -= 1;
+    if (g.remainingTurns <= 0) {
+      player.activeGuerilla = null;
+      return `\n（※『${stayLoc}』で目撃されていた襲撃部隊は期間を終えて撤収したようだ）`;
+    }
+    return `\n⚡【襲撃発生中】『${stayLoc}』に${gType ? gType.factionName : '敵部隊'}が駐留中！（期間：${timeRange} / 戦利品：${tItem ? `${tItem.icon}${tItem.name}` : '切り札'}）`;
   }
   
   // ==========================================
@@ -303,6 +377,7 @@ import {
   
     if (!loc1 || !loc2) return;
   
+    const hadActiveGuerrillaBefore = Boolean(player.activeGuerilla);
     const guerrillaTickNote = tickActiveGuerrilla(player);
   
     const enemy1 = loc1.enemies[Math.floor(Math.random() * loc1.enemies.length)];
@@ -363,7 +438,7 @@ import {
     player.currentLocation = step1Key;
   
     if (loc1.isStopper) {
-      const spawnNotice = trySpawnGuerrillaRaid(player);
+      const spawnNotice = !hadActiveGuerrillaBefore ? trySpawnGuerrillaRaid(player) : null;
       const spawnLine = spawnNotice ? `\n\n${spawnNotice}` : guerrillaTickNote;
       await savePlayer(player);
       const story1 = await generateRaidNarrative(loc1.name, battle1, player, enemy1, loot1Text, {
@@ -439,7 +514,9 @@ import {
       step2Extra = `\n\n${battle2.hint}`;
     }
   
-    const spawnNotice = battle2.result === 'WIN' ? trySpawnGuerrillaRaid(player) : null;
+    const spawnNotice = (!hadActiveGuerrillaBefore && battle2.result === 'WIN')
+      ? trySpawnGuerrillaRaid(player)
+      : null;
     const guerrillaFooter = spawnNotice ? `\n\n${spawnNotice}` : guerrillaTickNote;
   
     await savePlayer(player);
@@ -529,9 +606,11 @@ import {
       const locKey = player.reservedLocation || (player.currentLocation !== 'アジト' ? player.currentLocation : defaultLoc);
       const locData = MAP_LOCATIONS[locKey] || MAP_LOCATIONS[defaultLoc];
   
+      // 横取り奇襲戦の発火条件（開戦待ちwaitTurnsが0以下、かつ残り有効枠がある場合のみ）
       const isGuerrillaEncounter = Boolean(
         !forceDefense &&
         player.activeGuerilla &&
+        (player.activeGuerilla.waitTurns || 0) <= 0 &&
         player.activeGuerilla.remainingTurns > 0 &&
         player.activeGuerilla.location === locKey
       );
@@ -607,7 +686,7 @@ import {
       }
   
       // ----------------------------------------------------
-      // A-2. 横取り奇襲戦（ゲリラ発生エリアへのカチ込み）
+      // A-2. 横取り奇襲戦（ゲリラ開戦中エリアへのカチ込み）
       // ----------------------------------------------------
       if (isGuerrillaEncounter) {
         let movedAwaySlotLostNotice = '';
@@ -616,10 +695,14 @@ import {
           movedAwaySlotLostNotice = `\n（※別エリアへ移動したため、覚醒していた『第6スロット』は消滅した）`;
         }
   
-        const gTypeKey = player.activeGuerilla.typeKey;
+        const gObj = player.activeGuerilla;
+        const gTypeKey = gObj.typeKey;
         const gTypeInfo = GUERRILLA_RAID_TYPES[gTypeKey] || GUERRILLA_RAID_TYPES.acid_bottle;
         const trumpInfo = TRUMP_ITEMS[gTypeKey] || TRUMP_ITEMS.acid_bottle;
         const gEnemy = getGuerrillaEnemy(gTypeKey, currentChapter);
+        const timeRange = (gObj.startTimeText && gObj.endTimeText)
+          ? `${gObj.startTimeText} 〜 ${gObj.endTimeText}`
+          : '現在出現中';
   
         const battleData = simulateBattle(player, gEnemy, locKey);
         player.hp = battleData.finalPlayerHp;
@@ -663,7 +746,7 @@ import {
           player.activeGuerilla.remainingTurns -= 1;
           let remainNote = '';
           if (player.activeGuerilla.remainingTurns > 0) {
-            remainNote = `\n⚡【再戦可能】${gTypeInfo.factionName}はまだ『${locData.name}』に留まっている！（残り${player.activeGuerilla.remainingTurns}行動有効）`;
+            remainNote = `\n⚡【再戦可能】${gTypeInfo.factionName}はまだ『${locData.name}』に留まっている！（出現期間：${timeRange}）`;
           } else {
             player.activeGuerilla = null;
             remainNote = `\n（※${gTypeInfo.factionName}は物資を回収して戦場から撤収した）`;
@@ -737,7 +820,8 @@ import {
       player.hp = battleData.finalPlayerHp;
       player.reservedLocation = null;
   
-      // 既存のゲリラがあれば1枠経過させる
+      // 既存のゲリラがあれば待機枠または残り枠を1進める
+      const hadActiveGuerrillaBefore = Boolean(player.activeGuerilla);
       const guerrillaTickNote = tickActiveGuerrilla(player);
   
       let lootText = 'なし';
@@ -940,8 +1024,10 @@ import {
         interludeText = failNotes.length > 0 ? `\n\n${failNotes.join('\n')}` : '';
       }
   
-      // 戦闘終了後、現在ゲリラが未発生なら25%で新規ゲリラを発生抽選
-      const newGuerrillaNotice = (!player.activeGuerilla) ? trySpawnGuerrillaRaid(player) : null;
+      // 戦闘開始前にゲリラが存在しなかった場合のみ、25%で新規ゲリラを発生抽選
+      const newGuerrillaNotice = (!hadActiveGuerrillaBefore && !player.activeGuerilla)
+        ? trySpawnGuerrillaRaid(player)
+        : null;
       if (newGuerrillaNotice) {
         interludeText += `\n\n${newGuerrillaNotice}`;
       } else if (guerrillaTickNote) {

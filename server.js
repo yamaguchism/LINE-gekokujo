@@ -66,7 +66,10 @@ app.use('/public', express.static(path.resolve('public')));
 // ゲリラ出現情報フォーマットヘルパー（1行表示用）
 // ==========================================
 function formatActiveGuerrillaLine(player) {
-  if (!player.activeGuerilla || player.activeGuerilla.remainingTurns <= 0) {
+  if (
+    !player.activeGuerilla ||
+    ((player.activeGuerilla.waitTurns || 0) <= 0 && player.activeGuerilla.remainingTurns <= 0)
+  ) {
     return '';
   }
   const g = player.activeGuerilla;
@@ -74,7 +77,15 @@ function formatActiveGuerrillaLine(player) {
   const gType = GUERRILLA_RAID_TYPES[g.typeKey];
   const tItem = TRUMP_ITEMS[g.typeKey];
   if (!gType || !tItem) return '';
-  return `\n⚡ 襲撃情報：『${locName}』に${gType.factionName}（残${g.remainingTurns}行動 / ${tItem.icon}${tItem.name}）`;
+
+  const timeRange = (g.startTimeText && g.endTimeText)
+    ? `${g.startTimeText} 〜 ${g.endTimeText}`
+    : '現在出現中';
+
+  if ((g.waitTurns || 0) > 0) {
+    return `\n⏳ 襲撃予告：『${locName}』に${gType.factionName}（予定：${timeRange} / ${tItem.icon}${tItem.name}）`;
+  }
+  return `\n⚡ 襲撃発生中：『${locName}』に${gType.factionName}（期間：${timeRange} / ${tItem.icon}${tItem.name}）`;
 }
 
 // ==========================================
@@ -786,18 +797,27 @@ ${openingScene}
         await savePlayer(player);
 
         const stats = calculateEffectiveStats(player);
-        const isGuerrillaTarget = Boolean(
-          player.activeGuerilla &&
-          player.activeGuerilla.remainingTurns > 0 &&
-          player.activeGuerilla.location === matchedKey
+        const g = player.activeGuerilla;
+        const hasGuerillaHere = Boolean(
+          g &&
+          ((g.waitTurns || 0) > 0 || g.remainingTurns > 0) &&
+          g.location === matchedKey
         );
 
         let guerrillaPlanLine = '';
-        if (isGuerrillaTarget) {
-          const gType = GUERRILLA_RAID_TYPES[player.activeGuerilla.typeKey];
-          const tItem = TRUMP_ITEMS[player.activeGuerilla.typeKey];
+        if (hasGuerillaHere) {
+          const gType = GUERRILLA_RAID_TYPES[g.typeKey];
+          const tItem = TRUMP_ITEMS[g.typeKey];
+          const timeRange = (g.startTimeText && g.endTimeText)
+            ? `${g.startTimeText} 〜 ${g.endTimeText}`
+            : '現在出現中';
+
           if (gType && tItem) {
-            guerrillaPlanLine = `\n・⚡横取り標的：${gType.factionName}（戦利品：${tItem.icon}${tItem.name}）`;
+            if ((g.waitTurns || 0) > 0) {
+              guerrillaPlanLine = `\n・⏳襲撃予告：${gType.factionName}は【${timeRange}】に出現予定だ（※次回の定時進軍ではまだ通常の敵との交戦・先回り駐留になるぞ）`;
+            } else {
+              guerrillaPlanLine = `\n・⚡横取り標的：${gType.factionName}（期間：${timeRange} / 戦利品：${tItem.icon}${tItem.name}）`;
+            }
           }
         }
 
@@ -819,9 +839,18 @@ ${openingScene}
       // ------------------------------------------
       // E. テスト即時決行 ＆ テスト防衛戦 ＆ テストゲリラ発生
       // ------------------------------------------
-      } else if (userText === 'テストゲリラ' || userText === 'ゲリラ発生') {
+      } else if (
+        userText === 'テストゲリラ' ||
+        userText === 'テストゲリラA' ||
+        userText === 'テストゲリラB' ||
+        userText === 'ゲリラ発生'
+      ) {
         player.activeGuerilla = null;
-        const notice = trySpawnGuerrillaRaid(player, true);
+        let forcedPattern = null;
+        if (userText === 'テストゲリラA') forcedPattern = 'A';
+        if (userText === 'テストゲリラB') forcedPattern = 'B';
+
+        const notice = trySpawnGuerrillaRaid(player, true, forcedPattern);
         await savePlayer(player);
 
         await lineClient.replyMessage({
