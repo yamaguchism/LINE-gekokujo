@@ -46,6 +46,13 @@ function describeWeaponStyle(player) {
   return traits.length > 0 ? traits.join(' ＋ ') : '無骨な鉄塊を振り回す荒々しい肉弾戦';
 }
 
+const SAFETY_SETTINGS = [
+  { category: 'HARM_CATEGORY_HARASSMENT', threshold: 'BLOCK_NONE' },
+  { category: 'HARM_CATEGORY_HATE_SPEECH', threshold: 'BLOCK_NONE' },
+  { category: 'HARM_CATEGORY_SEXUALLY_EXPLICIT', threshold: 'BLOCK_NONE' },
+  { category: 'HARM_CATEGORY_DANGEROUS_CONTENT', threshold: 'BLOCK_NONE' },
+];
+
 /**
  * Gemini API 呼び出し共通ラッパー（2.5-flash ➔ 2.5-flash-lite 自動フォールバック）
  */
@@ -54,15 +61,30 @@ async function callGeminiWithFallback(prompt) {
     const response = await ai.models.generateContent({
       model: 'gemini-2.5-flash',
       contents: prompt,
+      config: {
+        safetySettings: SAFETY_SETTINGS,
+      },
     });
-    return response.text.trim();
+    const text = response?.text?.trim();
+    if (!text) {
+      throw new Error('Empty response from gemini-2.5-flash (possibly blocked by filter)');
+    }
+    return text;
   } catch (primaryErr) {
     console.warn('>>> [AI Backup] gemini-2.5-flash 制限またはエラーのため gemini-2.5-flash-lite へ自動切替:', primaryErr.message);
+    await new Promise((resolve) => setTimeout(resolve, 1000));
     const response = await ai.models.generateContent({
       model: 'gemini-2.5-flash-lite',
       contents: prompt,
+      config: {
+        safetySettings: SAFETY_SETTINGS,
+      },
     });
-    return response.text.trim();
+    const text = response?.text?.trim();
+    if (!text) {
+      throw new Error('Empty response from gemini-2.5-flash-lite');
+    }
+    return text;
   }
 }
 
