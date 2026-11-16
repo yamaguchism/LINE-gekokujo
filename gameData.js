@@ -4,7 +4,7 @@
 
 export const MAP_LOCATIONS = {
   // ==========================================
-  // 【共通：アジトへの凱旋路（常設ファストトラベル）】
+  // 【共通：アジトへの凱旋路（各戦線アジト帰還ルート）】
   // ==========================================
   '帰還': {
     chapter: 0,
@@ -24,9 +24,67 @@ export const MAP_LOCATIONS = {
     isStopper: true,
     isReturn: true,
   },
+  '帰還_廃砦': {
+    chapter: 1,
+    targetBase: '廃砦',
+    name: '荒れ野の廃砦への帰還路',
+    desc: '黒鉄の峡谷地帯を抜けてガルガン領の本拠地『荒れ野の廃砦』へ帰還し、部隊HPを100%全快する。',
+    enemies: [
+      { name: '人間軍の追撃哨戒兵', hp: 50, atk: 19, def: 8, attackName: 'ショートスピア突撃' },
+      { name: '国境警備の輜重兵', hp: 55, atk: 20, def: 9, attackName: 'メイス振り回し' },
+    ],
+    possibleLoot: [
+      { item: '王国鋼', count: 1 },
+      { item: '装甲板', count: 1 },
+      { item: '黒火薬', count: 1 },
+      { item: '兵糧', count: 2 },
+    ],
+    isBoss: false,
+    isStopper: true,
+    isReturn: true,
+  },
+  '帰還_要塞門': {
+    chapter: 2,
+    targetBase: '要塞門',
+    name: '強奪した要塞門への帰還路',
+    desc: '哨戒部隊を蹴散らして峡谷と教会平原の境界アジト『強奪した要塞門』へ帰還し、HPを100%全快する。',
+    enemies: [
+      { name: '平原巡回の聖堂哨戒兵', hp: 62, atk: 22, def: 10, attackName: 'ハルバード突撃' },
+      { name: '教会領の武装輜重兵', hp: 65, atk: 23, def: 11, attackName: 'ヘビーメイス殴打' },
+    ],
+    possibleLoot: [
+      { item: '王国鋼', count: 1 },
+      { item: '装甲板', count: 1 },
+      { item: '黒火薬', count: 1 },
+      { item: '兵糧', count: 2 },
+    ],
+    isBoss: false,
+    isStopper: true,
+    isReturn: true,
+  },
+  '帰還_大聖堂': {
+    chapter: 3,
+    targetBase: '大聖堂',
+    name: '占領した大聖堂への帰還路',
+    desc: '追撃部隊を蹴散らして教会平原と中央回廊の境界アジト『占領した教会領大聖堂』へ帰還し、HPを100%全快する。',
+    enemies: [
+      { name: '遠征軍の追撃先遣兵', hp: 74, atk: 25, def: 12, attackName: '銃槍突撃' },
+      { name: '回廊警備の重装輜重兵', hp: 78, atk: 26, def: 13, attackName: 'ウォーハンマー粉砕打' },
+    ],
+    possibleLoot: [
+      { item: '王国鋼', count: 1 },
+      { item: '装甲板', count: 1 },
+      { item: '黒火薬', count: 1 },
+      { item: '魔導石', count: 1 },
+      { item: '兵糧', count: 2 },
+    ],
+    isBoss: false,
+    isStopper: true,
+    isReturn: true,
+  },
 
   // ==========================================
-  // 【第1章：国境要塞突破編】
+  // 【第1章：黒鉄の峡谷地帯】
   // ==========================================
   '渓谷': {
     chapter: 1,
@@ -119,7 +177,7 @@ export const MAP_LOCATIONS = {
   },
 
   // ==========================================
-  // 【第2章：王国穀倉・教会領侵入編（地続きノード構造）】
+  // 【第2章：聖涙川の教会平原（地続きノード構造）】
   // ==========================================
   '農村': {
     chapter: 2,
@@ -415,7 +473,7 @@ export const MAP_LOCATIONS = {
   },
 
   // ==========================================
-  // 【第3章：英傑拮抗戦線（中央回廊・人間遠征軍総本陣）】
+  // 【第3章：覇権の万魔中央回廊】
   // ==========================================
   '中立交易区': {
     chapter: 3,
@@ -524,6 +582,82 @@ export const MAP_LOCATIONS = {
     isChapter3FinalBoss: true,
   },
 };
+
+// ==========================================
+// 伝説の武器（封印石の聖剣）イベント用：発掘隊＆守り神データ
+// ==========================================
+export const RELIC_EXCAVATION_ENEMY = {
+  name: '王立聖遺物発掘隊＆近衛重装護衛団',
+  hp: 110,
+  atk: 26,
+  def: 14,
+  attackName: '聖銀銃槍の防衛斉射',
+  quote: '「な、なぜここに魔族の本隊が！？ ええい、台座の岩盤ごと切り出している最中だ、何としても死守しろ！」',
+  defeatQuote: '「ひぃぃっ！ 祭壇の岩盤ごと斧で叩き折って持ち去る気か！？ ば、罰当たりな怪物どもめぇぇ！」',
+  isRelicExcavation: true,
+};
+
+/**
+ * 守り神（太古の番人）のデータを撃退数（wins）に応じて生成する
+ * 初回（wins === 0）は控えめな強さに設定し、連勝するごとに段階強化される
+ */
+export function getGuardianEnemy(wins = 0) {
+  if (wins <= 0) {
+    return {
+      name: '遺物を護る太古の番人（第1現界）',
+      hp: 115,
+      atk: 27,
+      def: 13,
+      attackName: '白銀の天罰閃',
+      quote: '「……古ノ楔ヲ穢シ、封ヲ持チ去ル不届キ者ヨ。天ノ理ニ従イ、ソノ身ヲ塵ト還ス……」',
+      defeatQuote: '「……バカナ……不壊ノ封石ニ亀裂ガ入ルホドノ暴威ダト……！？ ダガ、理ハ滅ビヌ……」',
+      isGuardian: true,
+      guardianLevel: 1,
+    };
+  }
+  if (wins === 1) {
+    return {
+      name: '遺物を護る太古の番人（第2現界）',
+      hp: 145,
+      atk: 33,
+      def: 17,
+      attackName: '神罰の連装光槍',
+      quote: '「……再ビ現界セシハ、不遜ナル暴徒ヲ討ツタメ。古ノ刃ヲ今コソ元ノ眠リヘ還セ……」',
+      defeatQuote: '「……グォォ……我ガ神聖障壁ガ、泥臭キ鉄塊ニ粉砕サレルトハ……」',
+      isGuardian: true,
+      guardianLevel: 2,
+    };
+  }
+  if (wins === 2) {
+    return {
+      name: '遺物を護る太古の番人（第3現界・神威解放）',
+      hp: 175,
+      atk: 39,
+      def: 21,
+      attackName: '天界の断罪轟雷',
+      gimmick: 'REFLECT_SHIELD',
+      reflectRate: 0.20,
+      quote: '「……許サヌ……幾度モ天ノ理ヲ蹂躙スル狂獣め。反射ノ光輪ト共ニ魂ゴト灼キ尽クス……！」',
+      defeatQuote: '「……アリエヌ……神代ノ番人ガ、斯様ナ無法者ドモニ三度マデモ屈スルトハ……」',
+      isGuardian: true,
+      guardianLevel: 3,
+    };
+  }
+
+  const extra = wins - 3;
+  return {
+    name: `遺物を護る太古の番人（第${wins + 1}現界・終末形態）`,
+    hp: 205 + extra * 35,
+    atk: 44 + extra * 6,
+    def: 24 + extra * 3,
+    attackName: '神代終焉の裁き',
+    gimmick: 'BERSERK',
+    quote: '「……モハヤ慈悲モ警告モ無用。天ノ全霊ヲ以テ、貴様ラヲ地上カラ抹消スル……！！」',
+    defeatQuote: '「……オオォォ……天ノ理ガ、完全ニ砕ケ散ル……！！」',
+    isGuardian: true,
+    guardianLevel: wins + 1,
+  };
+}
 
 // ==========================================
 // アジト防衛戦 襲撃敵データ（魔軍卿の世界観準拠・動的バリエーション対応）

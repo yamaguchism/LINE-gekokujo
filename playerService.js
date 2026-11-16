@@ -3,7 +3,7 @@ import fs from 'fs';
 import path from 'path';
 import { createClient } from '@supabase/supabase-js';
 import { MAP_LOCATIONS, TRUMP_ITEMS } from './gameData.js';
-import { getBaseName } from './battleEngine.js';
+import { getBaseName, calculateEffectiveStats } from './battleEngine.js';
 
 // ==========================================
 // プレイヤーデータ永続化（完全独立セーブ ＆ ローカルバックアップ連動）
@@ -66,9 +66,23 @@ export function createInitialPlayer(userId, displayName = 'シンジ') {
     ch2Step: 0,
     ch3Step: 0,
     currentLocation: 'アジト',
+    currentBase: '廃砦',
     baseWallLevel: 1,
     baseArmoryLevel: 1,
     baseFurnaceLevel: 0,
+    pendingFactionStory: null,
+    pendingKingdomStory: null,
+    legendaryRelic: {
+      ch3Wins: 0,
+      stage: 0,
+      hasRelic: false,
+      wins: 0,
+      totalWins: 0,
+      turnsUntilGuardian: 0,
+      cooldown: 0,
+      attemptCount: 0,
+      latestReport: '',
+    },
     bossWins: {
       '検問所': 0,
       '前哨砦': 0,
@@ -109,6 +123,22 @@ export function normalizePlayer(p, userId) {
   }
   if (p.ch2Step >= 2 && p.chapter < 3) p.chapter = 3;
   if (!p.currentLocation) p.currentLocation = 'アジト';
+
+  if (!p.currentBase) {
+    if (p.currentLocation !== 'アジト' && MAP_LOCATIONS[p.currentLocation]) {
+      const locCh = MAP_LOCATIONS[p.currentLocation].chapter;
+      p.currentBase = locCh === 3 ? '大聖堂' : (locCh === 2 ? '要塞門' : '廃砦');
+    } else if (p.ch3Step >= 2) {
+      p.currentBase = '総本陣';
+    } else if (p.ch2Step >= 2 || p.chapter >= 3) {
+      p.currentBase = '大聖堂';
+    } else if (p.ch1Step >= 3 || p.chapter >= 2) {
+      p.currentBase = '要塞門';
+    } else {
+      p.currentBase = '廃砦';
+    }
+  }
+
   if (!p.baseWallLevel) p.baseWallLevel = 1;
   if (!p.baseArmoryLevel) p.baseArmoryLevel = 1;
   if (p.baseFurnaceLevel === undefined) p.baseFurnaceLevel = 0;
@@ -118,6 +148,33 @@ export function normalizePlayer(p, userId) {
   if (p.useTrumpItem === undefined) p.useTrumpItem = false;
   if (p.activeGuerilla === undefined) p.activeGuerilla = null;
   if (p.revengeTarget === undefined) p.revengeTarget = null;
+  if (p.pendingFactionStory === undefined) p.pendingFactionStory = null;
+  if (p.pendingKingdomStory === undefined) p.pendingKingdomStory = null;
+
+  if (!p.legendaryRelic || typeof p.legendaryRelic !== 'object') {
+    p.legendaryRelic = {
+      ch3Wins: 0,
+      stage: 0,
+      hasRelic: false,
+      wins: 0,
+      totalWins: 0,
+      turnsUntilGuardian: 0,
+      cooldown: 0,
+      attemptCount: 0,
+      latestReport: '',
+    };
+  } else {
+    if (p.legendaryRelic.ch3Wins === undefined) p.legendaryRelic.ch3Wins = 0;
+    if (p.legendaryRelic.stage === undefined) p.legendaryRelic.stage = 0;
+    if (p.legendaryRelic.hasRelic === undefined) p.legendaryRelic.hasRelic = false;
+    if (p.legendaryRelic.wins === undefined) p.legendaryRelic.wins = 0;
+    if (p.legendaryRelic.totalWins === undefined) p.legendaryRelic.totalWins = 0;
+    if (p.legendaryRelic.turnsUntilGuardian === undefined) p.legendaryRelic.turnsUntilGuardian = 0;
+    if (p.legendaryRelic.cooldown === undefined) p.legendaryRelic.cooldown = 0;
+    if (p.legendaryRelic.attemptCount === undefined) p.legendaryRelic.attemptCount = 0;
+    if (p.legendaryRelic.latestReport === undefined) p.legendaryRelic.latestReport = '';
+  }
+
   if (!p.bossWins) p.bossWins = {};
   if (p.castleFloor === undefined) p.castleFloor = 0;
   if (!Array.isArray(p.castleLoot)) p.castleLoot = [];
@@ -140,7 +197,10 @@ export function normalizePlayer(p, userId) {
   if (p.inventory['魔導石'] === undefined) p.inventory['魔導石'] = 0;
   if (p.inventory['兵糧'] === undefined) p.inventory['兵糧'] = 3;
 
-  if (p.hp === undefined || p.hp <= 0) p.hp = p.baseHp;
+  const effectiveMaxHp = calculateEffectiveStats(p).maxHp;
+  if (p.hp === undefined || p.hp <= 0) {
+    p.hp = effectiveMaxHp;
+  }
 
   return p;
 }
@@ -193,10 +253,11 @@ export async function savePlayer(player) {
   saveLocalPlayers(localData);
   if (!supabase) return;
   try {
+    const effectiveMaxHp = calculateEffectiveStats(player).maxHp;
     const row = {
       line_user_id: player.userId,
-      hp: player.hp ?? 100,
-      max_hp: player.baseHp ?? 100,
+      hp: player.hp ?? effectiveMaxHp,
+      max_hp: effectiveMaxHp,
       current_stage: player.currentLocation || 'アジト',
       inventory: player,
       updated_at: new Date().toISOString(),

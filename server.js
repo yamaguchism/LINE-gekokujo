@@ -42,7 +42,11 @@ import {
 import {
   executeScheduledRaids,
   trySpawnGuerrillaRaid,
+  formatRelicStatusLine,
 } from './raidService.js';
+import {
+  generateKingdomReaction,
+} from './aiService.js';
 
 const channelAccessToken = process.env.LINE_CHANNEL_ACCESS_TOKEN || process.env.CHANNEL_ACCESS_TOKEN;
 const channelSecret = process.env.LINE_CHANNEL_SECRET || process.env.CHANNEL_SECRET;
@@ -86,6 +90,15 @@ function formatActiveGuerrillaLine(player) {
     return `\n⏳ 襲撃予告：『${locName}』に${gType.factionName}（予定：${timeRange} / ${tItem.icon}${tItem.name}）`;
   }
   return `\n⚡ 襲撃発生中：『${locName}』に${gType.factionName}（期間：${timeRange} / ${tItem.icon}${tItem.name}）`;
+}
+
+// ==========================================
+// 本拠地伝令メモフォーマットヘルパー（陣況確認1行表示用）
+// ==========================================
+function formatRelicReportLine(player) {
+  const r = player.legendaryRelic;
+  if (!r || !r.latestReport) return '';
+  return `\n🦇 本拠地伝令：${r.latestReport}`;
 }
 
 // ==========================================
@@ -269,6 +282,7 @@ app.post('/webhook', middleware(lineConfig), async (req, res) => {
           player.ch1Step = 1;
         }
         player.currentLocation = '検問所';
+        player.currentBase = '廃砦';
         await savePlayer(player);
 
         const s = player.slots || { steel: 2, plate: 2, powder: 0, stone: 0 };
@@ -394,6 +408,149 @@ ${openingScene}
       }
 
       // ------------------------------------------
+      // 0-F. 王都の密談（人間王国側の別軸幕間劇）閲覧コマンド
+      // ------------------------------------------
+      if (userText === '王都の密談を見る' || userText === '👑 王都の密談を見る') {
+        if (!player.pendingKingdomStory) {
+          await lineClient.replyMessage({
+            replyToken: event.replyToken,
+            messages: [{
+              type: 'text',
+              text: `👑 王都・玉座の間の気配はすでに遠ざかっているようだ。\n📍 現在地：${getCurrentLocationName(player)}\n▼ 下のボタンから次の行動を選択せよ。`,
+              quickReply: makeQuickReply(getSmartButtons(player)),
+            }],
+          });
+          continue;
+        }
+
+        const kingdomStoryToDeliver = player.pendingKingdomStory;
+        player.pendingKingdomStory = null;
+        await savePlayer(player);
+
+        const kingdomReplyText =
+`${kingdomStoryToDeliver}
+
+━━━━━━━━━━━━━━━━━━
+📍 現在地：${getCurrentLocationName(player)}${formatRelicStatusLine(player)}
+▼ 下のボタンから次の進軍先を選択せよ。`;
+
+        await lineClient.replyMessage({
+          replyToken: event.replyToken,
+          messages: [{
+            type: 'text',
+            text: kingdomReplyText,
+            quickReply: makeQuickReply(getSmartButtons(player)),
+          }],
+        });
+        continue;
+      }
+
+      // ------------------------------------------
+      // 0-G. 聖剣の任意放棄（『剣を捨てる』：封印石かち割り利確 ＆ 再封印）
+      // ------------------------------------------
+      if (userText === '剣を捨てる' || userText === '🗡️ 剣を捨てる') {
+        if (!player.legendaryRelic || !player.legendaryRelic.hasRelic) {
+          await lineClient.replyMessage({
+            replyToken: event.replyToken,
+            messages: [{
+              type: 'text',
+              text: '⚠️ 現在、手元に捨てられる剣はないぞ。下のボタンから行動を選べ。',
+              quickReply: makeQuickReply(getSmartButtons(player, true)),
+            }],
+          });
+          continue;
+        }
+
+        const r = player.legendaryRelic;
+        const wins = r.wins || 0;
+        const extractedList = [];
+        let anyCapped = false;
+
+        if (wins === 1) {
+          const rSteel = addLootWithCap(player, '王国鋼', 1);
+          const rStone = addLootWithCap(player, '魔導石', 1);
+          if (rSteel.added > 0) extractedList.push({ item: '王国鋼', count: rSteel.added });
+          if (rStone.added > 0) extractedList.push({ item: '魔導石', count: rStone.added });
+          if (rSteel.capped || rStone.capped) anyCapped = true;
+        } else if (wins === 2) {
+          for (const mat of ['王国鋼', '装甲板', '黒火薬', '魔導石']) {
+            const res = addLootWithCap(player, mat, 1);
+            if (res.added > 0) extractedList.push({ item: mat, count: res.added });
+            if (res.capped) anyCapped = true;
+          }
+        } else if (wins >= 3) {
+          for (const mat of ['王国鋼', '装甲板', '黒火薬', '魔導石']) {
+            const res = addLootWithCap(player, mat, 2);
+            if (res.added > 0) extractedList.push({ item: mat, count: res.added });
+            if (res.capped) anyCapped = true;
+          }
+        }
+
+        // 聖剣の手放し＆累積ステータス強化リセット＆再封印クールダウン開始
+        r.hasRelic = false;
+        r.wins = 0;
+        r.turnsUntilGuardian = 0;
+        r.cooldown = 5;
+        r.latestReport = '遺物は番人により回収・再封印された（再潜入まで静観中）';
+
+        const resetStats = calculateEffectiveStats(player);
+        player.hp = Math.min(player.hp, resetStats.maxHp);
+
+        if (!player.pendingFactionStory) {
+          player.pendingKingdomStory = await generateKingdomReaction('RESEALED_DISCARD', player, { wins });
+        }
+
+        await savePlayer(player);
+
+        let discardScene = '';
+        let lootSummary = 'なし';
+
+        if (wins <= 0) {
+          discardScene =
+`🗡️【封印石の聖剣を放り出して放棄】
+
+「こんな抜けもしねえ石塊、重てえだけだ！」
+${player.leader}は台座の封印石に『${player.weapon}』を叩きつけてみたが、まだ傷一つない封石は火花を散らすばかりでビクともしない。
+舌打ち一つでそのまま泥濘へ放り捨てると、天より一条の白光が降り注ぎ、現界した『太古の番人』が無言のうちに遺物を回収して再び旧国境の地下深くへと封じ直した。`;
+        } else {
+          lootSummary = formatLootList(extractedList);
+          const capWarn = anyCapped ? '（※一部素材は武器庫上限のため破棄）' : '';
+          lootSummary = `${lootSummary}${capWarn}`;
+
+          discardScene =
+`🔨【封印石をかち割り、パーツを剥ぎ取って廃棄！】
+
+「そろそろ番人の相手も飽きたな。タダで捨ててたまるかよ！」
+${player.leader}はこれまでの番人との激闘で深く亀裂が走っていた封印石の隙間に『${player.weapon}』の刃をねじ込み、渾身の力でかち割った！
+砕け散った台座の中から高純度の神聖鉱石や金属パーツを根こそぎ剥ぎ取り、裸になった白銀の刃を泥沼へと蹴り捨てる。
+直後、天より降り立った『太古の番人』が無惨に剥ぎ取られた残骸を回収し、再び旧国境の地下深くへと封じ直した。`;
+        }
+
+        const kingHook = player.pendingKingdomStory
+          ? `\n👑（※再封印の波動が王都にも届いたようだ。下の『👑 王都の密談を見る』を確認せよ）`
+          : '';
+
+        const discardReply =
+`${discardScene}
+
+━━━━━━━━━━━━━━━━━━
+📦 剥ぎ取り戦果：${lootSummary}
+📊 現在の実効能力（通常値へ復帰）：
+HP:${player.hp}/${resetStats.maxHp} | 攻:${resetStats.atk} | 防:${resetStats.def}
+━━━━━━━━━━━━━━━━━━${kingHook}`;
+
+        await lineClient.replyMessage({
+          replyToken: event.replyToken,
+          messages: [{
+            type: 'text',
+            text: discardReply,
+            quickReply: makeQuickReply(getSmartButtons(player)),
+          }],
+        });
+        continue;
+      }
+
+      // ------------------------------------------
       // A. 開幕・リセット・地図・作戦地図
       // ------------------------------------------
       if (
@@ -411,7 +568,8 @@ ${openingScene}
         const reservedName = getReservedDisplayName(player.reservedLocation);
         const resNotice = player.reservedLocation ? `（次回予約: 『${reservedName}』）` : '';
         const gLine = formatActiveGuerrillaLine(player);
-        const minimalText = `📍 現在地：${curLocName} ${resNotice}${gLine}`;
+        const rLine = formatRelicStatusLine(player);
+        const minimalText = `📍 現在地：${curLocName} ${resNotice}${gLine}${rLine}`;
 
         const mapImageUrl = resolveMapImageUrl(player, req);
         const replyMessages = [];
@@ -447,12 +605,13 @@ ${openingScene}
         const curLocName = getCurrentLocationName(player);
         const reservedName = getReservedDisplayName(player.reservedLocation);
         const gLine = formatActiveGuerrillaLine(player);
+        const rLine = formatRelicStatusLine(player);
 
         await lineClient.replyMessage({
           replyToken: event.replyToken,
           messages: [{
             type: 'text',
-            text: `📍 現在地：${curLocName}\n次回予約：『${reservedName}』${gLine}`,
+            text: `📍 現在地：${curLocName}\n次回予約：『${reservedName}』${gLine}${rLine}`,
             quickReply: makeQuickReply(getSmartButtons(player, true)),
           }],
         });
@@ -731,7 +890,7 @@ ${openingScene}
 `⚔️【出撃予約完了：『${loc.name}』】
 ・作戦内容：${loc.desc || '敵陣強襲・物資略奪'}${trumpStatusLine}
 ・現在地：${getCurrentLocationName(player)}
-・部隊戦力：HP${player.hp}/${stats.maxHp}（攻${stats.atk} / 防${stats.def}）
+・部隊戦力：HP${player.hp}/${stats.maxHp}（攻${stats.atk} / 防${stats.def}）${formatRelicStatusLine(player)}
 
 ⏰ 次の定時（8:00 / 12:00 / 20:00）、または下の『⚡ 今すぐ決行』で進軍を開始するぞ！`,
             quickReply: makeQuickReply(getSmartButtons(player)),
@@ -739,7 +898,7 @@ ${openingScene}
         });
 
       // ------------------------------------------
-      // D. 出撃予約（通常拠点・横取り奇襲・関門ボス）
+      // D. 出撃予約（通常拠点・横取り奇襲・関門ボス・各アジト帰還）
       // ------------------------------------------
       } else if (
         userText.startsWith('出撃：') ||
@@ -751,7 +910,9 @@ ${openingScene}
           if (MAP_LOCATIONS[candidate]) matchedKey = candidate;
         }
         if (!matchedKey) {
-          for (const k of Object.keys(MAP_LOCATIONS)) {
+          // 長いキー（『帰還_廃砦』など）が短いキー（『帰還』）に吸われないよう文字数降順で照合
+          const sortedKeys = Object.keys(MAP_LOCATIONS).sort((a, b) => b.length - a.length);
+          for (const k of sortedKeys) {
             if (userText.includes(k)) {
               matchedKey = k;
               break;
@@ -829,7 +990,7 @@ ${openingScene}
 `⚔️【出撃予約完了：『${loc.name}』】
 ・作戦内容：${loc.desc || '敵陣強襲・物資略奪'}${guerrillaPlanLine}
 ・現在地：${getCurrentLocationName(player)}
-・部隊戦力：HP${player.hp}/${stats.maxHp}（攻${stats.atk} / 防${stats.def}）
+・部隊戦力：HP${player.hp}/${stats.maxHp}（攻${stats.atk} / 防${stats.def}）${formatRelicStatusLine(player)}
 
 ⏰ 次の定時（8:00 / 12:00 / 20:00）、または下の『⚡ 今すぐ決行』で進軍を開始するぞ！`,
             quickReply: makeQuickReply(getSmartButtons(player)),
@@ -896,7 +1057,7 @@ ${openingScene}
         const forgeGuide =
 `🔨【廃砦の鍛冶場：${player.weapon}】
 基本スロット使用：${total}/5枠
-（⛏️鋼:${s.steel || 0} / 🛡️板:${s.plate || 0} / 🧨火:${s.powder || 0} / 🔮石:${s.stone || 0}）${sixthLine}
+（⛏️鋼:${s.steel || 0} / 🛡️板:${s.plate || 0} / 🧨火:${s.powder || 0} / 🔮石:${s.stone || 0}）${sixthLine}${formatRelicStatusLine(player)}
 
 📊 実効ステータス：
 HP:${player.hp}/${stats.maxHp} | 攻:${stats.atk} | 防:${stats.def}
@@ -1171,11 +1332,13 @@ HP:${player.hp}/${stats.maxHp} | 攻:${stats.atk} | 防:${stats.def}
         const curLoc = getCurrentLocationName(player);
         const resName = getReservedDisplayName(player.reservedLocation);
         const gLine = formatActiveGuerrillaLine(player);
+        const rStatusLine = formatRelicStatusLine(player);
+        const rReportLine = formatRelicReportLine(player);
 
         const statusText =
 `📋【${player.name}・現在の陣況報告】
 📍 現在地：${curLoc}
-🎯 次回予約：${resName}${gLine}
+🎯 次回予約：${resName}${gLine}${rStatusLine}${rReportLine}
 ❤️ 部隊HP：${player.hp} / ${stats.maxHp}
 🃏 切り札：${getTrumpItemDisplay(player)}
 
@@ -1229,11 +1392,12 @@ HP:${player.hp}/${stats.maxHp} | 攻:${stats.atk} | 防:${stats.def}
       // ------------------------------------------
       } else {
         const gLine = formatActiveGuerrillaLine(player);
+        const rLine = formatRelicStatusLine(player);
         await lineClient.replyMessage({
           replyToken: event.replyToken,
           messages: [{
             type: 'text',
-            text: `📍 現在地：${getCurrentLocationName(player)}\n次回予約：『${getReservedDisplayName(player.reservedLocation)}』${gLine}`,
+            text: `📍 現在地：${getCurrentLocationName(player)}\n次回予約：『${getReservedDisplayName(player.reservedLocation)}』${gLine}${rLine}`,
             quickReply: makeQuickReply(getSmartButtons(player, true)),
           }],
         });

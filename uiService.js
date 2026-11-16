@@ -1,7 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import { getTotalSlots } from './battleEngine.js';
-import { TRUMP_ITEMS } from './gameData.js';
+import { MAP_LOCATIONS, TRUMP_ITEMS } from './gameData.js';
 
 // ==========================================
 // UI生成（QuickReplyボタン・地図画像URL解決）モジュール
@@ -20,18 +20,34 @@ export function makeQuickReply(items) {
   };
 }
 
+/**
+ * プレイヤーが現在滞在している戦線（1:黒鉄の峡谷 / 2:聖涙川の教会平原 / 3:覇権の万魔中央回廊）を返す
+ */
+export function getActiveRegion(player) {
+  const cur = player.currentLocation || 'アジト';
+  if (cur !== 'アジト' && MAP_LOCATIONS[cur] && MAP_LOCATIONS[cur].chapter >= 1) {
+    return MAP_LOCATIONS[cur].chapter;
+  }
+  if (player.currentBase === '廃砦') return 1;
+  if (player.currentBase === '要塞門') return (player.ch1Step >= 3 || player.chapter >= 2) ? 2 : 1;
+  if (player.currentBase === '大聖堂' || player.currentBase === '総本陣') return 3;
+
+  if (player.chapter >= 3 || player.ch2Step >= 2) return 3;
+  if (player.chapter >= 2 || player.ch1Step >= 3) return 2;
+  return 1;
+}
+
 export function resolveMapImageUrl(player, req) {
   const host = req.headers['x-forwarded-host'] || req.headers.host || '';
   const baseUrl = process.env.BASE_URL || (host ? `https://${host}` : '');
   if (!baseUrl || !baseUrl.startsWith('https://')) return null;
 
-  const isCh3 = player.chapter >= 3 || player.ch2Step >= 2;
-  const isCh2 = !isCh3 && (player.chapter >= 2 || player.ch1Step >= 3);
+  const region = getActiveRegion(player);
 
   const candidates = [];
-  if (isCh3) {
+  if (region === 3) {
     candidates.push('chapter3_world_map.jpg', 'chapter3_map.jpg', 'chapter3_world_map.png', 'chapter3_map.png');
-  } else if (isCh2) {
+  } else if (region === 2) {
     candidates.push('chapter2_world_map.jpg', 'chapter2_map.jpg', 'chapter2_world_map.png', 'chapter2_map.png');
   } else {
     candidates.push('chapter1_world_map.jpg', 'chapter1_map.jpg', 'chapter1_world_map.png', 'chapter1_map.png');
@@ -57,6 +73,18 @@ export function getBossTrumpConfirmButtons(locKey, trumpKey) {
 }
 
 export function getSmartButtons(player, forceShow = false) {
+  // 1. 幕間劇（魔王城・王都）が保留中の場合は必ず単独ボタンでロックする
+  if (player.pendingFactionStory) {
+    return [
+      { label: '🍷 魔王城の反応を見る', text: '幕間劇を見る' },
+    ];
+  }
+  if (player.pendingKingdomStory) {
+    return [
+      { label: '👑 王都の密談を見る', text: '王都の密談を見る' },
+    ];
+  }
+
   if (player.reservedLocation && !forceShow) {
     return [];
   }
@@ -72,128 +100,182 @@ export function getSmartButtons(player, forceShow = false) {
   }
 
   const buttons = [];
-  const isCh3 = player.chapter >= 3 || player.ch2Step >= 2;
-  const isCh2 = !isCh3 && (player.chapter >= 2 || player.ch1Step >= 3);
+  const unlockedCh3 = player.chapter >= 3 || player.ch2Step >= 2;
+  const unlockedCh2 = unlockedCh3 || player.chapter >= 2 || player.ch1Step >= 3;
   const cur = player.currentLocation || 'アジト';
 
-  if (isCh3) {
-    if (cur === 'アジト') {
+  // ==========================================
+  // A. 各アジト滞在時（境界アジトでは前後の戦線どちらも選択可能）
+  // ==========================================
+  if (cur === 'アジト') {
+    const base = player.currentBase || (unlockedCh3 ? '大聖堂' : (unlockedCh2 ? '要塞門' : '廃砦'));
+
+    if ((base === '大聖堂' || base === '総本陣') && unlockedCh3) {
+      // 【大聖堂アジト / 総本陣アジト】：覇権の万魔中央回廊（前進）＋ 聖涙川の教会平原（後退）の両方を選択可能
       buttons.push({ label: '🍷 交易区へ進軍(兵糧×2・石)', text: '出撃：中立交易区' });
       buttons.push({ label: '⚒️ 補給工廠へ進軍(板・鋼)', text: '出撃：補給工廠' });
       buttons.push({ label: '🌙 遠征：交易区➔宿営地(2連)', text: '遠征：中立交易区>前線宿営地' });
       buttons.push({ label: '🌙 遠征：工廠➔宿営地(2連)', text: '遠征：補給工廠>前線宿営地' });
-      buttons.push({ label: '🌉 旧領：跳ね橋(ヴァルハイト城)', text: '出撃：跳ね橋' });
+      // 1つ前の戦線（聖涙川の教会平原）へ戻る選択肢
+      buttons.push({ label: '🌾 平原：農村へ戻る(兵糧・鋼)', text: '出撃：農村' });
+      buttons.push({ label: '⚒️ 平原：兵站所へ戻る(板・鋼)', text: '出撃：兵站所' });
+      buttons.push({ label: '⛪ 平原：礼拝堂へ戻る(石・火)', text: '出撃：礼拝堂' });
 
-    } else if (cur === '中立交易区') {
-      buttons.push({ label: '💣 前線宿営地へ進軍(火薬・鋼)', text: '出撃：前線宿営地' });
-      buttons.push({ label: '⚒️ 補給工廠へ移動(板・鋼)', text: '出撃：補給工廠' });
-      buttons.push({ label: '🍷 交易区を継続略奪', text: '出撃：中立交易区' });
-      buttons.push({ label: '🌙 遠征：工廠➔宿営地(2連)', text: '遠征：補給工廠>前線宿営地' });
-
-    } else if (cur === '補給工廠') {
-      buttons.push({ label: '💣 前線宿営地へ進軍(火薬・鋼)', text: '出撃：前線宿営地' });
-      buttons.push({ label: '🍷 交易区へ移動(兵糧×2・石)', text: '出撃：中立交易区' });
-      buttons.push({ label: '⚒️ 補給工廠を継続略奪', text: '出撃：補給工廠' });
-      buttons.push({ label: '🌙 遠征：交易区➔宿営地(2連)', text: '遠征：中立交易区>前線宿営地' });
-
-    } else if (cur === '前線宿営地') {
-      buttons.push({ label: '⚔️ 回廊関門へ進軍(中ボス)', text: '出撃：回廊関門' });
-      buttons.push({ label: '💣 前線宿営地を継続略奪', text: '出撃：前線宿営地' });
-      buttons.push({ label: '🍷 交易区へ後退(兵糧×2・石)', text: '出撃：中立交易区' });
-      buttons.push({ label: '⚒️ 補給工廠へ後退(板・鋼)', text: '出撃：補給工廠' });
-
-    } else if (cur === '回廊関門') {
-      if (player.ch3Step >= 1) {
-        buttons.push({ label: '🏰 遠征軍総本陣へ(回廊大ボス)', text: '出撃：遠征軍総本陣' });
-      }
-      buttons.push({ label: '⚔️ 回廊関門を討伐(アルバート)', text: '出撃：回廊関門' });
-      buttons.push({ label: '💣 前線宿営地へ後退(火薬・鋼)', text: '出撃：前線宿営地' });
-
-    } else if (cur === '遠征軍総本陣') {
-      buttons.push({ label: '🏰 遠征軍総本陣を討伐(元帥)', text: '出撃：遠征軍総本陣' });
-      buttons.push({ label: '⚔️ 回廊関門へ後退', text: '出撃：回廊関門' });
-
-    } else if (cur === '跳ね橋') {
-      buttons.push({ label: '🏯 城門突破！ヴァルハイト城へ', text: '出撃：ヴァルハイト城' });
-
-    } else {
-      buttons.push({ label: '🍷 交易区へ進軍', text: '出撃：中立交易区' });
-      buttons.push({ label: '⚒️ 補給工廠へ進軍', text: '出撃：補給工廠' });
-    }
-
-  } else if (isCh2) {
-    if (cur === 'アジト') {
+    } else if (base === '要塞門' && unlockedCh2) {
+      // 【要塞門アジト】：聖涙川の教会平原（前進）＋ 黒鉄の峡谷地帯（後退）の両方を選択可能
       buttons.push({ label: '🌾 農村へ進軍(兵糧×2・鋼)', text: '出撃：農村' });
       buttons.push({ label: '⚒️ 兵站所へ進軍(板・鋼)', text: '出撃：兵站所' });
       buttons.push({ label: '🌙 遠征：農村➔礼拝堂(2連)', text: '遠征：農村>礼拝堂' });
       buttons.push({ label: '🌙 遠征：兵站所➔跳ね橋(2連)', text: '遠征：兵站所>跳ね橋' });
+      // 1つ前の戦線（黒鉄の峡谷地帯）へ戻る選択肢
+      buttons.push({ label: '⛏️ 峡谷：渓谷へ戻る(鋼・板)', text: '出撃：渓谷' });
+      buttons.push({ label: '🍞 峡谷：街道へ戻る(火薬・兵糧)', text: '出撃：街道' });
 
-    } else if (cur === '農村') {
-      buttons.push({ label: '⛪ 礼拝堂へ進軍(魔導石・火)', text: '出撃：礼拝堂' });
-      buttons.push({ label: '⚒️ 兵站所へ移動(板・鋼)', text: '出撃：兵站所' });
-      buttons.push({ label: '🌾 農村を継続略奪', text: '出撃：農村' });
-      buttons.push({ label: '🌙 遠征：兵站所➔跳ね橋(2連)', text: '遠征：兵站所>跳ね橋' });
+    } else {
+      // 【荒れ野の廃砦（本拠地）】：黒鉄の峡谷地帯への出撃
+      buttons.push({ label: '⛏️ 渓谷（鋼・板略奪）', text: '出撃：渓谷' });
+      buttons.push({ label: '🍞 街道（火薬・兵糧×2）', text: '出撃：街道' });
 
-    } else if (cur === '兵站所') {
-      buttons.push({ label: '🌉 跳ね橋へ進軍(攻城前哨戦)', text: '出撃：跳ね橋' });
-      buttons.push({ label: '🌾 農村へ移動(兵糧×2・鋼)', text: '出撃：農村' });
-      buttons.push({ label: '⚒️ 兵站所を継続略奪', text: '出撃：兵站所' });
-      buttons.push({ label: '🌙 遠征：農村➔礼拝堂(2連)', text: '遠征：農村>礼拝堂' });
-
-    } else if (cur === '跳ね橋') {
-      buttons.push({ label: '🏯 城門突破！ヴァルハイト城へ', text: '出撃：ヴァルハイト城' });
-      buttons.push({ label: '⚒️ 兵站所へ一時後退', text: '出撃：兵站所' });
-
-    } else if (cur === '礼拝堂') {
-      buttons.push({ label: '🧪 工房跡へ進軍(中ボス)', text: '出撃：工房跡' });
-      buttons.push({ label: '💀 禁忌大霊廟へ突入(腕試し)', text: '出撃：大霊廟' });
-      buttons.push({ label: '⛪ 礼拝堂を継続略奪', text: '出撃：礼拝堂' });
-      buttons.push({ label: '🌾 農村へ移動(兵糧×2・鋼)', text: '出撃：農村' });
-      buttons.push({ label: '🌙 遠征：農村➔兵站所(2連)', text: '遠征：農村>兵站所' });
-
-    } else if (cur === '工房跡') {
-      if (player.ch2Step >= 1) {
-        buttons.push({ label: '🏰 大聖堂へ進軍(平原大ボス)', text: '出撃：大聖堂' });
+      if (player.ch1Step === 0) {
+        buttons.push({ label: '⚔️ 検問所（ガルシア）', text: '出撃：検問所' });
+      } else if (player.ch1Step === 1) {
+        buttons.push({ label: '🛡️ 前哨砦（バルツ）', text: '出撃：前哨砦' });
+      } else {
+        buttons.push({ label: '🏰 要塞門（ロシュ）', text: '出撃：要塞門' });
       }
-      buttons.push({ label: '🧪 工房跡を討伐(錬金術師)', text: '出撃：工房跡' });
-      buttons.push({ label: '⛪ 礼拝堂へ後退(魔導石・火)', text: '出撃：礼拝堂' });
-
-    } else if (cur === '大聖堂') {
-      buttons.push({ label: '🏰 大聖堂を討伐(聖堂重騎士)', text: '出撃：大聖堂' });
-      buttons.push({ label: '🧪 工房跡へ移動', text: '出撃：工房跡' });
-
-    } else if (cur === '大霊廟') {
-      buttons.push({ label: '💀 大霊廟に再挑戦(神聖巨像)', text: '出撃：大霊廟' });
-      buttons.push({ label: '⛪ 礼拝堂へ地上脱出', text: '出撃：礼拝堂' });
-
-    } else {
-      buttons.push({ label: '🌾 農村へ進軍', text: '出撃：農村' });
-      buttons.push({ label: '⚒️ 兵站所へ進軍', text: '出撃：兵站所' });
-    }
-
-  } else {
-    buttons.push({ label: '⛏️ 渓谷（鋼・板略奪）', text: '出撃：渓谷' });
-    buttons.push({ label: '🍞 街道（火薬・兵糧×2）', text: '出撃：街道' });
-
-    if (player.ch1Step === 0) {
-      buttons.push({ label: '⚔️ 検問所（ガルシア）', text: '出撃：検問所' });
-    } else if (player.ch1Step === 1) {
-      buttons.push({ label: '🛡️ 前哨砦（バルツ）', text: '出撃：前哨砦' });
-    } else {
-      buttons.push({ label: '🏰 要塞門（ロシュ）', text: '出撃：要塞門' });
-    }
-
-    if (cur === 'アジト' || cur === '街道') {
       buttons.push({ label: '🌙 遠征：渓谷➔街道(2連)', text: '遠征：渓谷>街道' });
-    } else if (cur === '渓谷') {
-      buttons.push({ label: '🌙 遠征：街道➔渓谷(2連)', text: '遠征：街道>渓谷' });
+    }
+
+    buttons.push({ label: '🏰 アジト強化', text: 'アジト強化' });
+
+  // ==========================================
+  // B. 前線拠点滞在時（現在地の戦線に応じて表示）
+  // ==========================================
+  } else {
+    const locChapter = MAP_LOCATIONS[cur]?.chapter || getActiveRegion(player);
+
+    if (locChapter === 3) {
+      if (cur === '中立交易区') {
+        buttons.push({ label: '💣 前線宿営地へ進軍(火薬・鋼)', text: '出撃：前線宿営地' });
+        buttons.push({ label: '⚒️ 補給工廠へ移動(板・鋼)', text: '出撃：補給工廠' });
+        buttons.push({ label: '🍷 交易区を継続略奪', text: '出撃：中立交易区' });
+        buttons.push({ label: '🌙 遠征：工廠➔宿営地(2連)', text: '遠征：補給工廠>前線宿営地' });
+
+      } else if (cur === '補給工廠') {
+        buttons.push({ label: '💣 前線宿営地へ進軍(火薬・鋼)', text: '出撃：前線宿営地' });
+        buttons.push({ label: '🍷 交易区へ移動(兵糧×2・石)', text: '出撃：中立交易区' });
+        buttons.push({ label: '⚒️ 補給工廠を継続略奪', text: '出撃：補給工廠' });
+        buttons.push({ label: '🌙 遠征：交易区➔宿営地(2連)', text: '遠征：中立交易区>前線宿営地' });
+
+      } else if (cur === '前線宿営地') {
+        buttons.push({ label: '⚔️ 回廊関門へ進軍(中ボス)', text: '出撃：回廊関門' });
+        buttons.push({ label: '💣 前線宿営地を継続略奪', text: '出撃：前線宿営地' });
+        buttons.push({ label: '🍷 交易区へ後退(兵糧×2・石)', text: '出撃：中立交易区' });
+        buttons.push({ label: '⚒️ 補給工廠へ後退(板・鋼)', text: '出撃：補給工廠' });
+
+      } else if (cur === '回廊関門') {
+        if (player.ch3Step >= 1) {
+          buttons.push({ label: '🏰 遠征軍総本陣へ(回廊大ボス)', text: '出撃：遠征軍総本陣' });
+        }
+        buttons.push({ label: '⚔️ 回廊関門を討伐(アルバート)', text: '出撃：回廊関門' });
+        buttons.push({ label: '💣 前線宿営地へ後退(火薬・鋼)', text: '出撃：前線宿営地' });
+
+      } else if (cur === '遠征軍総本陣') {
+        buttons.push({ label: '🏰 遠征軍総本陣を討伐(元帥)', text: '出撃：遠征軍総本陣' });
+        buttons.push({ label: '⚔️ 回廊関門へ後退', text: '出撃：回廊関門' });
+
+      } else {
+        buttons.push({ label: '🍷 交易区へ進軍', text: '出撃：中立交易区' });
+        buttons.push({ label: '⚒️ 補給工廠へ進軍', text: '出撃：補給工廠' });
+      }
+
+      // 第3戦線からのアジト帰還（大聖堂アジトへ）
+      buttons.push({ label: '⛺ 大聖堂アジトへ帰還(略奪&全快)', text: '出撃：帰還_大聖堂' });
+
+    } else if (locChapter === 2) {
+      if (cur === '農村') {
+        buttons.push({ label: '⛪ 礼拝堂へ進軍(魔導石・火)', text: '出撃：礼拝堂' });
+        buttons.push({ label: '⚒️ 兵站所へ移動(板・鋼)', text: '出撃：兵站所' });
+        buttons.push({ label: '🌾 農村を継続略奪', text: '出撃：農村' });
+        buttons.push({ label: '🌙 遠征：兵站所➔跳ね橋(2連)', text: '遠征：兵站所>跳ね橋' });
+
+      } else if (cur === '兵站所') {
+        buttons.push({ label: '🌉 跳ね橋へ進軍(攻城前哨戦)', text: '出撃：跳ね橋' });
+        buttons.push({ label: '🌾 農村へ移動(兵糧×2・鋼)', text: '出撃：農村' });
+        buttons.push({ label: '⚒️ 兵站所を継続略奪', text: '出撃：兵站所' });
+        buttons.push({ label: '🌙 遠征：農村➔礼拝堂(2連)', text: '遠征：農村>礼拝堂' });
+
+      } else if (cur === '跳ね橋') {
+        buttons.push({ label: '🏯 城門突破！ヴァルハイト城へ', text: '出撃：ヴァルハイト城' });
+        buttons.push({ label: '⚒️ 兵站所へ一時後退', text: '出撃：兵站所' });
+
+      } else if (cur === '礼拝堂') {
+        buttons.push({ label: '🧪 工房跡へ進軍(中ボス)', text: '出撃：工房跡' });
+        buttons.push({ label: '💀 禁忌大霊廟へ突入(腕試し)', text: '出撃：大霊廟' });
+        buttons.push({ label: '⛪ 礼拝堂を継続略奪', text: '出撃：礼拝堂' });
+        buttons.push({ label: '🌾 農村へ移動(兵糧×2・鋼)', text: '出撃：農村' });
+        buttons.push({ label: '🌙 遠征：農村➔兵站所(2連)', text: '遠征：農村>兵站所' });
+
+      } else if (cur === '工房跡') {
+        if (player.ch2Step >= 1) {
+          buttons.push({ label: '🏰 大聖堂へ進軍(平原大ボス)', text: '出撃：大聖堂' });
+        }
+        buttons.push({ label: '🧪 工房跡を討伐(錬金術師)', text: '出撃：工房跡' });
+        buttons.push({ label: '⛪ 礼拝堂へ後退(魔導石・火)', text: '出撃：礼拝堂' });
+
+      } else if (cur === '大聖堂') {
+        buttons.push({ label: '🏰 大聖堂を討伐(聖堂重騎士)', text: '出撃：大聖堂' });
+        buttons.push({ label: '🧪 工房跡へ移動', text: '出撃：工房跡' });
+
+      } else if (cur === '大霊廟') {
+        buttons.push({ label: '💀 大霊廟に再挑戦(神聖巨像)', text: '出撃：大霊廟' });
+        buttons.push({ label: '⛪ 礼拝堂へ地上脱出', text: '出撃：礼拝堂' });
+
+      } else {
+        buttons.push({ label: '🌾 農村へ進軍', text: '出撃：農村' });
+        buttons.push({ label: '⚒️ 兵站所へ進軍', text: '出撃：兵站所' });
+      }
+
+      // 第2戦線からのアジト帰還（大聖堂制圧済みなら前後の両アジトへ帰還可能）
+      if (unlockedCh3) {
+        buttons.push({ label: '⛺ 大聖堂アジトへ帰還(回廊側)', text: '出撃：帰還_大聖堂' });
+        buttons.push({ label: '⛺ 要塞門アジトへ帰還(峡谷側)', text: '出撃：帰還_要塞門' });
+      } else {
+        buttons.push({ label: '⛺ 要塞門アジトへ帰還(略奪&全快)', text: '出撃：帰還_要塞門' });
+      }
+
+    } else {
+      // 第1戦線（黒鉄の峡谷地帯）滞在時
+      buttons.push({ label: '⛏️ 渓谷（鋼・板略奪）', text: '出撃：渓谷' });
+      buttons.push({ label: '🍞 街道（火薬・兵糧×2）', text: '出撃：街道' });
+
+      if (player.ch1Step === 0) {
+        buttons.push({ label: '⚔️ 検問所（ガルシア）', text: '出撃：検問所' });
+      } else if (player.ch1Step === 1) {
+        buttons.push({ label: '🛡️ 前哨砦（バルツ）', text: '出撃：前哨砦' });
+      } else {
+        buttons.push({ label: '🏰 要塞門（ロシュ）', text: '出撃：要塞門' });
+      }
+
+      if (cur === '街道') {
+        buttons.push({ label: '🌙 遠征：渓谷➔街道(2連)', text: '遠征：渓谷>街道' });
+      } else if (cur === '渓谷') {
+        buttons.push({ label: '🌙 遠征：街道➔渓谷(2連)', text: '遠征：街道>渓谷' });
+      }
+
+      // 第1戦線からのアジト帰還（要塞門制圧済みなら本拠地『荒れ野の廃砦』と『要塞門アジト』の両方へ帰還可能）
+      if (unlockedCh2) {
+        buttons.push({ label: '⛺ 荒れ野の廃砦へ帰還(本拠地)', text: '出撃：帰還_廃砦' });
+        buttons.push({ label: '⛺ 要塞門アジトへ帰還(平原側)', text: '出撃：帰還_要塞門' });
+      } else {
+        buttons.push({ label: '⛺ アジトへ帰還(略奪&全快)', text: '出撃：帰還_廃砦' });
+      }
     }
   }
 
-  if (cur !== 'アジト') {
-    buttons.push({ label: '⛺ アジトへ帰還(略奪&全快)', text: '出撃：帰還' });
-  } else {
-    buttons.push({ label: '🏰 アジト強化', text: 'アジト強化' });
+  // 聖剣所持中はいつでも放棄できるシンプルな『剣を捨てる』ボタンを表示
+  if (player.legendaryRelic && player.legendaryRelic.hasRelic) {
+    buttons.push({ label: '🗡️ 剣を捨てる', text: '剣を捨てる' });
   }
 
   // ゲリラ拠点のボタン装飾（予告中は ⏳、開戦中は ⚡ を付与）
