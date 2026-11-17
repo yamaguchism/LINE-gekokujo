@@ -448,7 +448,7 @@ ${openingScene}
       }
 
       // ------------------------------------------
-      // 0-G. 聖剣の任意放棄（『剣を捨てる』：封印石かち割り利確 ＆ 再封印）
+      // 0-G. 白銀剣の任意放棄（『剣を捨てる』：台座の石塊かち割り利確）
       // ------------------------------------------
       if (userText === '剣を捨てる' || userText === '🗡️ 剣を捨てる') {
         if (!player.legendaryRelic || !player.legendaryRelic.hasRelic) {
@@ -488,12 +488,12 @@ ${openingScene}
           }
         }
 
-        // 聖剣の手放し＆累積ステータス強化リセット＆再封印クールダウン開始
+        // 白銀剣の手放し＆累積ステータス強化リセット＆クールダウン開始
         r.hasRelic = false;
         r.wins = 0;
         r.turnsUntilGuardian = 0;
         r.cooldown = 5;
-        r.latestReport = '遺物は番人により回収・再封印された（再潜入まで静観中）';
+        r.latestReport = '投げ捨てた白銀の刃は番人に回収され持ち去られた（廃砦は一時静観中）';
 
         const resetStats = calculateEffectiveStats(player);
         player.hp = Math.min(player.hp, resetStats.maxHp);
@@ -509,27 +509,27 @@ ${openingScene}
 
         if (wins <= 0) {
           discardScene =
-`🗡️【封印石の聖剣を放り出して放棄】
+`🗡️【石塊付きの白銀剣を放り出して放棄】
 
 「こんな抜けもしねえ石塊、重てえだけだ！」
-${player.leader}は台座の封印石に『${player.weapon}』を叩きつけてみたが、まだ傷一つない封石は火花を散らすばかりでビクともしない。
-舌打ち一つでそのまま泥濘へ放り捨てると、天より一条の白光が降り注ぎ、現界した『太古の番人』が無言のうちに遺物を回収して再び旧国境の地下深くへと封じ直した。`;
+${player.leader}は刃の根元の石塊に『${player.weapon}』を叩きつけてみたが、まだ傷一つない石塊は火花を散らすばかりでビクともしない。
+舌打ち一つでそのまま泥濘へ放り捨てると、天より一条の白光が降り注ぎ、現界した『太古の番人』が無言のうちに白銀の刃を回収して光とともに持ち去った。`;
         } else {
           lootSummary = formatLootList(extractedList);
           const capWarn = anyCapped ? '（※一部素材は武器庫上限のため破棄）' : '';
           lootSummary = `${lootSummary}${capWarn}`;
 
           discardScene =
-`🔨【封印石をかち割り、パーツを剥ぎ取って廃棄！】
+`🔨【台座の石塊をかち割り、パーツを剥ぎ取って廃棄！】
 
 「そろそろ番人の相手も飽きたな。タダで捨ててたまるかよ！」
-${player.leader}はこれまでの番人との激闘で深く亀裂が走っていた封印石の隙間に『${player.weapon}』の刃をねじ込み、渾身の力でかち割った！
-砕け散った台座の中から高純度の神聖鉱石や金属パーツを根こそぎ剥ぎ取り、裸になった白銀の刃を泥沼へと蹴り捨てる。
-直後、天より降り立った『太古の番人』が無惨に剥ぎ取られた残骸を回収し、再び旧国境の地下深くへと封じ直した。`;
+${player.leader}はこれまでの番人との激闘で深く亀裂が走っていた台座の石塊の隙間に『${player.weapon}』の刃をねじ込み、渾身の力でかち割った！
+砕け散った石塊の中から高純度の鉱石や金属パーツを根こそぎ剥ぎ取り、裸になった白銀の刃を泥沼へと蹴り捨てる。
+直後、天より降り立った『太古の番人』が無惨に剥ぎ取られた残骸を回収し、光とともに持ち去った。`;
         }
 
         const kingHook = player.pendingKingdomStory
-          ? `\n👑（※再封印の波動が王都にも届いたようだ。下の『👑 王都の密談を見る』を確認せよ）`
+          ? `\n👑（※この出来事が王都にも伝わったようだ。下の『👑 王都の密談を見る』を確認せよ）`
           : '';
 
         const discardReply =
@@ -1126,16 +1126,7 @@ HP:${player.hp}/${resetStats.maxHp} | 攻:${resetStats.atk} | 防:${resetStats.d
 
       } else if (userText.includes('即時決行') || userText.includes('テスト防衛戦')) {
         const isDef = userText.includes('テスト防衛戦');
-        await lineClient.replyMessage({
-          replyToken: event.replyToken,
-          messages: [{
-            type: 'text',
-            text: isDef
-              ? '🚨 敵襲警報！本陣へ敵の奇襲部隊が接近中…！（数秒後にAI迎撃報告が届きます）'
-              : `⏳ 定時到来！${player.name}が作戦行動を開始した…（数秒後にAI戦闘報告が届きます）`,
-          }],
-        });
-        await executeScheduledRaids(lineClient, userId, isDef);
+        await executeScheduledRaids(lineClient, userId, isDef, event.replyToken);
 
       // ------------------------------------------
       // F. 鍛冶場・キメラ武器改造
