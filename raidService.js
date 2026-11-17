@@ -182,10 +182,10 @@ async function checkAndAdvanceRelicStage(player, wonInCh3, isFirstAlbertWinTurn 
 }
 
 /**
- * 1行動終了時のクールダウン＆番人カウント進行と、5行動目の番人連続襲来処理
- * ※もしそのターンに本編の『魔王城の反応』が発生している場合は、同時発生を避けるため襲来をあと1行動待つ
+ * 通常行動終了時のクールダウン＆番人カウント進行処理
+ * ※5行動目（番人襲来ターン）は executeScheduledRaids 冒頭で単独戦として優先実行されるため、ここではカウントのみ進める
  */
-async function tickRelicAndCheckGuardian(player, currentLocationTitle) {
+async function tickRelicAndCheckGuardian(player) {
   const r = player.legendaryRelic;
   if (!r) return '';
 
@@ -201,26 +201,39 @@ async function tickRelicAndCheckGuardian(player, currentLocationTitle) {
     return '';
   }
 
-  // 剣所持中の場合：1行動ごとに番人襲来カウントを1進める
-  r.turnsUntilGuardian = Math.max(0, (r.turnsUntilGuardian || 5) - 1);
-  if (r.turnsUntilGuardian > 0) {
-    return '';
-  }
-
-  // 魔王城の幕間劇が発生したターンは同時発生を防ぐため、番人の襲来を次行動（残り1行動）へズラす
-  if (player.pendingFactionStory || player.pendingKingdomStory) {
-    r.turnsUntilGuardian = 1;
+  // 剣所持中の場合：1行動ごとに番人襲来カウントを1減らす（最低1で待機し、次行動の冒頭で番人単独戦が発火する）
+  r.turnsUntilGuardian = Math.max(1, (r.turnsUntilGuardian || 5) - 1);
+  if (r.turnsUntilGuardian === 1) {
     return `\n\n⚡【不穏な脈動】背負った石塊付きの白銀の刃が激しく震えている……！ 次の行動で『太古の番人』が追いついてくるぞ！`;
   }
 
-  // 5行動経過：予約行動の直後に連続で『太古の番人』が襲来！
+  return '';
+}
+
+/**
+ * 5行動目到達時：予約していた移動・戦闘をキャンセルし、現在地その場で『太古の番人』との単独戦を行う
+ */
+async function executeGuardianStandaloneRaid(lineClient, userId, player, replyToken = null) {
+  player.pendingFactionStory = null;
+  player.pendingKingdomStory = null;
+  player.selectedRegion = null;
+  player.reservedLocation = null;
+  player.useTrumpItem = false;
+
+  const r = player.legendaryRelic;
   const currentWins = r.wins || 0;
   const guardianEnemy = getGuardianEnemy(currentWins);
+
+  const currentPlaceName =
+    player.currentLocation && player.currentLocation !== 'アジト' && MAP_LOCATIONS[player.currentLocation]
+      ? MAP_LOCATIONS[player.currentLocation].name
+      : getBaseName(player);
+
+  const guerrillaTickNote = tickActiveGuerrilla(player);
   const gBattle = simulateBattle(player, guardianEnemy, '番人襲来');
 
-  await sleep(700);
   const gStory = await generateRaidNarrative(
-    currentLocationTitle || getCurrentLocationName(player),
+    currentPlaceName,
     gBattle,
     player,
     guardianEnemy,
@@ -230,6 +243,9 @@ async function tickRelicAndCheckGuardian(player, currentLocationTitle) {
       sceneType: 'GUARDIAN',
     }
   );
+
+  let messageText = '';
+  const trumpLine = player.trumpItem ? `\n🃏 切り札：${getTrumpItemDisplay(player)}` : '';
 
   if (gBattle.result === 'WIN') {
     r.wins = currentWins + 1;
@@ -241,20 +257,26 @@ async function tickRelicAndCheckGuardian(player, currentLocationTitle) {
     player.hp = Math.min(newStats.maxHp, gBattle.finalPlayerHp + 10);
     r.latestReport = `石塊付きの白銀剣を奪取中（太古の番人を${r.wins}回撃退・全能力強化中）`;
 
-    await sleep(700);
+    await sleep(600);
     player.pendingKingdomStory = await generateKingdomReaction('GUARDIAN_WIN', player, { wins: r.wins });
 
-    return (
-      `\n\n━━━━━━━━━━━━━━━━━━\n` +
-      `⚡【強襲発生：${guardianEnemy.name}】\n\n` +
-      `${gStory}\n\n` +
-      `🔥【番人撃退ボーナス（累積${r.wins}勝）】\n` +
-      `・部隊ステータス強化：最大HP ＋${r.wins * 10} ／ 攻撃 ＋${r.wins * 3} ／ 防御 ＋${r.wins * 2}\n` +
-      `・台座の石塊の亀裂が深まり、『🗡️ 剣を捨てる』選択時の剥ぎ取り素材が増加した！\n` +
-      `👑（※番人消滅の衝撃が王都を震撼させている……！ 下の『👑 王都の密談を見る』を確認せよ）`
-    );
+    messageText =
+`⚡【強襲迎撃戦記：${guardianEnemy.name}】
+
+${gStory}
+
+🔥【番人撃退ボーナス（累積${r.wins}勝）】
+・部隊ステータス強化：最大HP ＋${r.wins * 10} ／ 攻撃 ＋${r.wins * 3} ／ 防御 ＋${r.wins * 2}
+・台座の石塊の亀裂が深まり、『🗡️ 剣を捨てる』選択時の剥ぎ取り素材が増加した！
+👑（※番人消滅の衝撃が王都を震撼させている……！ 下の『👑 王都の密談を見る』を確認せよ）${guerrillaTickNote}
+
+━━━━━━━━━━━━━━━━━━
+📍 現在地：${getCurrentLocationName(player)}
+❤️ 部隊HP：${player.hp} / ${newStats.maxHp}
+🎒 戦利品：なし${trumpLine}${formatRelicStatusLine(player)}
+━━━━━━━━━━━━━━━━━━`;
   } else {
-    // 敗北時：HP1で生還、累積ステータスアップはリセットされ、番人が剣を回収して持ち去る
+    // 敗北時：一歩後退せずその場に留まり、HP1で生還・累積ステータス強化リセット・番人が剣を回収
     r.hasRelic = false;
     r.wins = 0;
     r.turnsUntilGuardian = 0;
@@ -262,19 +284,29 @@ async function tickRelicAndCheckGuardian(player, currentLocationTitle) {
     r.latestReport = '白銀の刃は番人に奪い返され持ち去られた（廃砦は一時静観中）';
     player.hp = 1;
 
-    await sleep(700);
+    await sleep(600);
     player.pendingKingdomStory = await generateKingdomReaction('RESEALED_LOSE', player);
+    const resetStats = calculateEffectiveStats(player);
 
-    return (
-      `\n\n━━━━━━━━━━━━━━━━━━\n` +
-      `⚡【強襲発生：${guardianEnemy.name}・敗北】\n\n` +
-      `${gStory}\n\n` +
-      `💀【白銀の刃・奪還】\n` +
-      `・『${guardianEnemy.name}』にねじ伏せられ、石塊付きの白銀の刃は番人に奪い返されて光とともに持ち去られた。\n` +
-      `・番人撃退による累積ステータス強化は元の数値へと戻った。\n` +
-      `👑（※下の『👑 王都の密談を見る』から王都の様子を確認せよ）`
-    );
+    messageText =
+`⚡【強襲迎撃戦記：${guardianEnemy.name}・敗北】
+
+${gStory}
+
+💀【白銀の刃・奪還】
+・『${guardianEnemy.name}』にねじ伏せられ、石塊付きの白銀の刃は番人に奪い返されて光とともに持ち去られた。
+・番人撃退による累積ステータス強化は元の数値へと戻った。
+👑（※下の『👑 王都の密談を見る』から王都の様子を確認せよ）${guerrillaTickNote}
+
+━━━━━━━━━━━━━━━━━━
+📍 現在地：${getCurrentLocationName(player)}
+❤️ 部隊HP：1 / ${resetStats.maxHp}（瀕死・要「🍖 兵糧回復」）
+🎒 戦利品：なし${trumpLine}
+━━━━━━━━━━━━━━━━━━`;
   }
+
+  await savePlayer(player);
+  await deliverRaidMessage(lineClient, userId, player, messageText, replyToken);
 }
 
 /**
@@ -1118,6 +1150,19 @@ export async function executeScheduledRaids(lineClient, targetUserId = null, for
     const tokenForThisUser = (targetUserId && userId === targetUserId) ? replyToken : null;
     const { player } = await getOrCreatePlayer(userId);
 
+    // 5行動目（番人襲来カウントが1以下）：予約行動や移動をキャンセルし、現在地その場で『太古の番人』との1戦のみを行う
+    // （※ヴァルハイト城の攻略途中のみ、城を出た次の行動まで待機する）
+    const isMidCastle = player.currentLocation === 'ヴァルハイト城' && (player.castleFloor || 0) > 0;
+    if (
+      !forceDefense &&
+      !isMidCastle &&
+      player.legendaryRelic?.hasRelic &&
+      (player.legendaryRelic.turnsUntilGuardian ?? 5) <= 1
+    ) {
+      await executeGuardianStandaloneRaid(lineClient, userId, player, tokenForThisUser);
+      continue;
+    }
+
     if (
       player.reservedLocation === 'ヴァルハイト城' ||
       player.reservedLocation === '城郭：突撃' ||
@@ -1664,7 +1709,7 @@ ${story}${extraNotes}${relicStageNotice}${discoveryUrgentNote}${guardianFooter}
       interludeText += discoveryUrgentNote;
     }
 
-    // 1行動経過によるクールダウン＆番人襲来判定
+    // 1行動経過によるクールダウン＆番人カウント進行
     const guardianFooter = await tickRelicAndCheckGuardian(player, locData.name);
     if (guardianFooter) {
       interludeText += guardianFooter;
