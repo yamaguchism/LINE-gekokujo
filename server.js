@@ -9,6 +9,7 @@ import {
   MAP_LOCATIONS,
   TRUMP_ITEMS,
   GUERRILLA_RAID_TYPES,
+  isBossGateCleared,
 } from './gameData.js';
 import {
   getTotalSlots,
@@ -283,6 +284,7 @@ app.post('/webhook', middleware(lineConfig), async (req, res) => {
         }
         player.currentLocation = '検問所';
         player.currentBase = '廃砦';
+        player.selectedRegion = null;
         await savePlayer(player);
 
         const s = player.slots || { steel: 2, plate: 2, powder: 0, stone: 0 };
@@ -551,6 +553,90 @@ HP:${player.hp}/${resetStats.maxHp} | 攻:${resetStats.atk} | 防:${resetStats.d
       }
 
       // ------------------------------------------
+      // 0-H. 境界アジトでの2段階戦線選択（#1：行動消費なし）
+      // ------------------------------------------
+      if (
+        userText === '戦線を選び直す' ||
+        userText.startsWith('戦線選択：') ||
+        userText.includes('黒鉄の峡谷地帯') ||
+        userText.includes('聖涙川の教会平原') ||
+        userText.includes('覇権の万魔中央回廊')
+      ) {
+        if (userText === '戦線を選び直す') {
+          player.selectedRegion = null;
+          await savePlayer(player);
+          await lineClient.replyMessage({
+            replyToken: event.replyToken,
+            messages: [{
+              type: 'text',
+              text: `📍 現在地：${getCurrentLocationName(player)}\n▼ 出撃する戦線を選択せよ。`,
+              quickReply: makeQuickReply(getSmartButtons(player, true)),
+            }],
+          });
+          continue;
+        }
+
+        let regionNum = null;
+        if (userText.startsWith('戦線選択：')) {
+          regionNum = parseInt(userText.replace('戦線選択：', '').trim(), 10);
+        } else if (userText.includes('黒鉄の峡谷地帯')) {
+          regionNum = 1;
+        } else if (userText.includes('聖涙川の教会平原')) {
+          regionNum = 2;
+        } else if (userText.includes('覇権の万魔中央回廊')) {
+          regionNum = 3;
+        }
+
+        const regionNames = {
+          1: '黒鉄の峡谷地帯',
+          2: '聖涙川の教会平原',
+          3: '覇権の万魔中央回廊',
+        };
+
+        if (regionNum && regionNames[regionNum]) {
+          player.selectedRegion = regionNum;
+          await savePlayer(player);
+          const gLine = formatActiveGuerrillaLine(player);
+          await lineClient.replyMessage({
+            replyToken: event.replyToken,
+            messages: [{
+              type: 'text',
+              text: `🗺️【戦線展開：${regionNames[regionNum]}】${gLine}\n▼ 進軍する拠点を選択せよ。`,
+              quickReply: makeQuickReply(getSmartButtons(player, true)),
+            }],
+          });
+          continue;
+        }
+      }
+
+      // ------------------------------------------
+      // 0-I. 本拠地『荒れ野の廃砦』滞在予約コマンド
+      // ------------------------------------------
+      if (userText === '滞在_廃砦' || userText.includes('廃砦に滞在')) {
+        player.reservedLocation = '滞在_廃砦';
+        player.useTrumpItem = false;
+        player.selectedRegion = null;
+        await savePlayer(player);
+
+        const stats = calculateEffectiveStats(player);
+        await lineClient.replyMessage({
+          replyToken: event.replyToken,
+          messages: [{
+            type: 'text',
+            text:
+`⛺【滞在予約完了：『荒れ野の廃砦に滞在（見回り・休息）』】
+・作戦内容：本拠地に留まり、砦の奥の見回りと休息を行う
+・現在地：${getCurrentLocationName(player)}
+・部隊戦力：HP${player.hp}/${stats.maxHp}（攻${stats.atk} / 防${stats.def}）${formatRelicStatusLine(player)}
+
+⏰ 次の定時（8:00 / 12:00 / 20:00）、またはリッチメニューの『⚡ 今すぐ決行』で実行するぞ！`,
+            quickReply: makeQuickReply(getSmartButtons(player)),
+          }],
+        });
+        continue;
+      }
+
+      // ------------------------------------------
       // A. 開幕・リセット・地図・作戦地図
       // ------------------------------------------
       if (
@@ -602,6 +688,9 @@ HP:${player.hp}/${resetStats.maxHp} | 攻:${resetStats.atk} | 防:${resetStats.d
         userText === '行動選択' ||
         userText === 'メニュー'
       ) {
+        player.selectedRegion = null;
+        await savePlayer(player);
+
         const curLocName = getCurrentLocationName(player);
         const reservedName = getReservedDisplayName(player.reservedLocation);
         const gLine = formatActiveGuerrillaLine(player);
@@ -622,6 +711,7 @@ HP:${player.hp}/${resetStats.maxHp} | 攻:${resetStats.atk} | 防:${resetStats.d
       } else if (userText === '予約解除') {
         player.reservedLocation = null;
         player.useTrumpItem = false;
+        player.selectedRegion = null;
         await savePlayer(player);
 
         await lineClient.replyMessage({
@@ -653,6 +743,7 @@ HP:${player.hp}/${resetStats.maxHp} | 攻:${resetStats.atk} | 防:${resetStats.d
 
         player.reservedLocation = `${step1}>${step2}`;
         player.useTrumpItem = false;
+        player.selectedRegion = null;
         await savePlayer(player);
 
         const n1 = MAP_LOCATIONS[step1].name;
@@ -873,6 +964,7 @@ HP:${player.hp}/${resetStats.maxHp} | 攻:${resetStats.atk} | 防:${resetStats.d
         const useTrump = mode === 'ON' && Boolean(player.trumpItem);
         player.reservedLocation = targetKey;
         player.useTrumpItem = useTrump;
+        player.selectedRegion = null;
         await savePlayer(player);
 
         const loc = MAP_LOCATIONS[targetKey];
@@ -898,7 +990,7 @@ HP:${player.hp}/${resetStats.maxHp} | 攻:${resetStats.atk} | 防:${resetStats.d
         });
 
       // ------------------------------------------
-      // D. 出撃予約（通常拠点・横取り奇襲・関門ボス・各アジト帰還）
+      // D. 出撃予約（通常拠点・横取り奇襲・関門ボス・占領下関門・各アジト帰還）
       // ------------------------------------------
       } else if (
         userText.startsWith('出撃：') ||
@@ -933,9 +1025,10 @@ HP:${player.hp}/${resetStats.maxHp} | 攻:${resetStats.atk} | 防:${resetStats.d
         }
 
         const loc = MAP_LOCATIONS[matchedKey];
+        const isOccupiedGate = loc.isBoss && !loc.isChallenge && isBossGateCleared(player, matchedKey);
 
-        // 切り札所持中にボス拠点（関門ボス・大霊廟）を選択した場合、使う/使わないの確認ボタンを出す
-        if (loc.isBoss && player.trumpItem && TRUMP_ITEMS[player.trumpItem]) {
+        // 未制圧のボス拠点（またはチャレンジ拠点『大霊廟』）に切り札所持中で挑む場合のみ確認ボタンを出す
+        if (loc.isBoss && !isOccupiedGate && player.trumpItem && TRUMP_ITEMS[player.trumpItem]) {
           const tObj = TRUMP_ITEMS[player.trumpItem];
           await lineClient.replyMessage({
             replyToken: event.replyToken,
@@ -955,6 +1048,7 @@ HP:${player.hp}/${resetStats.maxHp} | 攻:${resetStats.atk} | 防:${resetStats.d
 
         player.reservedLocation = matchedKey;
         player.useTrumpItem = false;
+        player.selectedRegion = null;
         await savePlayer(player);
 
         const stats = calculateEffectiveStats(player);
@@ -982,13 +1076,20 @@ HP:${player.hp}/${resetStats.maxHp} | 攻:${resetStats.atk} | 防:${resetStats.d
           }
         }
 
+        const headerTitle = isOccupiedGate
+          ? `⚔️【移動・巡回予約完了：『${loc.name}（占領下）』】`
+          : `⚔️【出撃予約完了：『${loc.name}』】`;
+        const planDesc = isOccupiedGate
+          ? 'ガルガン軍が占領中の関門を通過・巡回する（ボス戦なし・占領下イベント発生）'
+          : (loc.desc || '敵陣強襲・物資略奪');
+
         await lineClient.replyMessage({
           replyToken: event.replyToken,
           messages: [{
             type: 'text',
             text:
-`⚔️【出撃予約完了：『${loc.name}』】
-・作戦内容：${loc.desc || '敵陣強襲・物資略奪'}${guerrillaPlanLine}
+`${headerTitle}
+・作戦内容：${planDesc}${guerrillaPlanLine}
 ・現在地：${getCurrentLocationName(player)}
 ・部隊戦力：HP${player.hp}/${stats.maxHp}（攻${stats.atk} / 防${stats.def}）${formatRelicStatusLine(player)}
 

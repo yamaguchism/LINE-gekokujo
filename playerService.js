@@ -67,6 +67,7 @@ export function createInitialPlayer(userId, displayName = 'シンジ') {
     ch3Step: 0,
     currentLocation: 'アジト',
     currentBase: '廃砦',
+    selectedRegion: null,
     baseWallLevel: 1,
     baseArmoryLevel: 1,
     baseFurnaceLevel: 0,
@@ -75,6 +76,7 @@ export function createInitialPlayer(userId, displayName = 'シンジ') {
     legendaryRelic: {
       ch3Wins: 0,
       stage: 0,
+      awaitingDiscovery: false,
       hasRelic: false,
       wins: 0,
       totalWins: 0,
@@ -139,6 +141,7 @@ export function normalizePlayer(p, userId) {
     }
   }
 
+  if (p.selectedRegion === undefined) p.selectedRegion = null;
   if (!p.baseWallLevel) p.baseWallLevel = 1;
   if (!p.baseArmoryLevel) p.baseArmoryLevel = 1;
   if (p.baseFurnaceLevel === undefined) p.baseFurnaceLevel = 0;
@@ -155,6 +158,7 @@ export function normalizePlayer(p, userId) {
     p.legendaryRelic = {
       ch3Wins: 0,
       stage: 0,
+      awaitingDiscovery: false,
       hasRelic: false,
       wins: 0,
       totalWins: 0,
@@ -166,6 +170,7 @@ export function normalizePlayer(p, userId) {
   } else {
     if (p.legendaryRelic.ch3Wins === undefined) p.legendaryRelic.ch3Wins = 0;
     if (p.legendaryRelic.stage === undefined) p.legendaryRelic.stage = 0;
+    if (p.legendaryRelic.awaitingDiscovery === undefined) p.legendaryRelic.awaitingDiscovery = false;
     if (p.legendaryRelic.hasRelic === undefined) p.legendaryRelic.hasRelic = false;
     if (p.legendaryRelic.wins === undefined) p.legendaryRelic.wins = 0;
     if (p.legendaryRelic.totalWins === undefined) p.legendaryRelic.totalWins = 0;
@@ -380,6 +385,7 @@ export function getRetreatLocation(locKey) {
 
 export function getReservedDisplayName(reservedLocation) {
   if (!reservedLocation) return '未予約';
+  if (reservedLocation === '滞在_廃砦') return '⛺ 荒れ野の廃砦に滞在（見回り・休息）';
   if (reservedLocation === '城郭：突撃') return '🏯 ヴァルハイト城（次階層へ突撃）';
   if (reservedLocation.includes('>')) {
     const [step1, step2] = reservedLocation.split('>');

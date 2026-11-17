@@ -6,6 +6,9 @@ import {
   RELIC_EXCAVATION_ENEMY,
   getGuerrillaEnemy,
   getGuardianEnemy,
+  isBossGateCleared,
+  rollOccupiedGateEvent,
+  getRuinsFortGarrisonReport,
 } from './gameData.js';
 import {
   getBaseName,
@@ -59,6 +62,23 @@ export function formatRelicStatusLine(player) {
 }
 
 /**
+ * 発掘隊撃退後（awaitingDiscovery中）に廃砦に滞在せず前線へ出撃した際の急報テキスト
+ */
+function getAwaitingDiscoveryFrontlineNotice(player) {
+  const r = player.legendaryRelic;
+  if (!r || !r.awaitingDiscovery) return '';
+  if (player.currentLocation === 'アジト' && player.currentBase === '廃砦') return '';
+
+  r.latestReport = '廃砦の魔導砲撃クレーターが陥没し異変発生！留守居隊が至急帰還を要請中';
+  return (
+    `\n\n┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈\n` +
+    `🦇【本拠地『荒れ野の廃砦』からの急報】\n` +
+    `「隊長、至急廃砦へ戻ってきてくれ！ あの発掘隊を叩き出したあと、散乱した土砂を片付けてたら、昔ゼノビアの女傑がぶっ放した魔導砲撃のクレーターが崩れて、底からとんでもねえもんが顔を出してやがる！ 俺たちの手には負えねえ、あんたの目で確かめてくれ！」\n` +
+    `┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈`
+  );
+}
+
+/**
  * 段階1〜3の進行チェック＆本拠地伝令・王都密談トリガー処理
  * ※重要：本編の『魔王城の反応（pendingFactionStory）』が発生したターンは同時発火させず次行動へ持ち越す
  */
@@ -84,42 +104,42 @@ async function checkAndAdvanceRelicStage(player, wonInCh3, isFirstAlbertWinTurn 
 
   if (r.stage === 0 && r.ch3Wins >= 2) {
     r.stage = 1;
-    r.latestReport = '本拠地『荒れ野の廃砦』周辺に王国の偵察兵が出没中（部下が撃退）';
+    r.latestReport = '本拠地『荒れ野の廃砦』周辺に妙なフードの連中が出没中（留守居隊が撃退）';
     await sleep(600);
     player.pendingKingdomStory = await generateKingdomReaction('STAGE_1', player);
     return (
       `\n\n┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈\n` +
       `🦇【本拠地『荒れ野の廃砦』からの伝令】\n` +
-      `「隊長！ 俺たちが守っている『黒鉄の峡谷地帯』の本拠地・荒れ野の廃砦の周りを、人間王国の偵察兵がコソコソ嗅ぎ回ってやがりました。見つけ次第ブチのめして追い払っておきましたぜ！」\n` +
+      `「……ああ隊長、大した話じゃねえんですが、最近このボロ砦の周りを妙なフードを被った連中がコソコソ嗅ぎ回ってやがりましてね。見つけ次第ブチのめして追い払ってますが、どこのハイエナだか気味が悪いですね」\n` +
       `┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈\n` +
-      `👑（※王都でも不穏な動きがあるようだ。下の『👑 王都の密談を見る』を確認せよ）`
+      `👑（※王都でも何か動きがあるようだ。下の『👑 王都の密談を見る』を確認せよ）`
     );
   }
 
   if (r.stage === 1 && r.ch3Wins >= 5) {
     r.stage = 2;
-    r.latestReport = '本拠地『荒れ野の廃砦』の地下岩盤を王国の調査団が探査中';
+    r.latestReport = '本拠地『荒れ野の廃砦』周辺をツルハシや真鍮の道具を持った連中が徘徊中';
     await sleep(600);
     player.pendingKingdomStory = await generateKingdomReaction('STAGE_2', player);
     return (
       `\n\n┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈\n` +
       `🦇【本拠地『荒れ野の廃砦』からの伝令】\n` +
-      `「隊長！ 今度はツルハシや妙な魔導測量器を持った王国の調査員どもが、本拠地の廃砦の地下岩盤を調べようと押し寄せてきやがりました！ 地下の奥に何か眠ってるみてえですが、気になりますね……」\n` +
+      `「……隊長、最近ちょっと鬱陶しいんですがね。剣も持たずにツルハシや妙な真鍮の道具を抱えた連中が、砦の外れをウロついてやがるんです。宝探し気取りか知りませんが、目障りなんで全員叩き出してやりましたぜ」\n` +
       `┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈\n` +
-      `👑（※下の『👑 王都の密談を見る』から王都の狙いを覗き見よ）`
+      `👑（※下の『👑 王都の密談を見る』から王都の動きを覗き見よ）`
     );
   }
 
   // 段階3：アルバート撃破後、さらに1勝した時（アルバート初撃破ターンそのものでは発火しない）
   if (r.stage === 2 && albertCleared && wonInCh3 && !isFirstAlbertWinTurn) {
     r.stage = 3;
-    r.latestReport = '本拠地『荒れ野の廃砦』の地下に王国の重装発掘隊が潜入中！';
+    r.latestReport = '本拠地『荒れ野の廃砦』の敷地内に鉄鎧の精鋭部隊と掘削隊が侵入中！';
     await sleep(600);
     player.pendingKingdomStory = await generateKingdomReaction('STAGE_3', player);
     return (
       `\n\n┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈\n` +
       `🦇【本拠地『荒れ野の廃砦』からの緊急伝令】\n` +
-      `「た、隊長ッ！ 本拠地『荒れ野の廃砦』の地下奥深くに、重装騎士団を引き連れた王国の発掘部隊が土足でなだれ込んで来やがりました！ 俺たちだけで食い止めてますが、地下の封印殿から何かを掘り出す気ですぜ！」\n` +
+      `「た、隊長ッ！ これまでコソコソ嗅ぎ回ってた連中とは別物の、全身を分厚い鉄鎧で固めた王国の精鋭部隊と掘削隊が、廃砦の敷地内に土足でなだれ込んで来やがりました！ 俺たちだけで食い止めてますが、砦の奥の地面を力ずくで掘り返す気ですぜ！」\n` +
       `┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈\n` +
       `👑（※下の『👑 王都の密談を見る』を確認せよ）`
     );
@@ -142,7 +162,7 @@ async function tickRelicAndCheckGuardian(player, currentLocationTitle) {
       r.cooldown -= 1;
       if (r.cooldown <= 0) {
         r.cooldown = 0;
-        r.latestReport = '本拠地『荒れ野の廃砦』の地下に再び王国の発掘隊が潜入中！';
+        r.latestReport = '本拠地『荒れ野の廃砦』の敷地内に再び王国の発掘部隊が侵入中！';
       }
     }
     return '';
@@ -374,6 +394,7 @@ export async function executeCastleRogueStep(lineClient, userId, player) {
   clearAwakenedSixthSlot(player, true);
   player.pendingFactionStory = null;
   player.pendingKingdomStory = null;
+  player.selectedRegion = null;
 
   const castleData = MAP_LOCATIONS['ヴァルハイト城'];
   const nextFloorNum = (player.castleFloor || 0) + 1;
@@ -415,13 +436,14 @@ export async function executeCastleRogueStep(lineClient, userId, player) {
 
       player.castleFloor = nextFloorNum;
       const nextFloorTitle = castleData.castleFloors[nextFloorNum + 1].floorName;
+      const discoveryUrgentNote = getAwaitingDiscoveryFrontlineNotice(player);
       const guardianFooter = await tickRelicAndCheckGuardian(player, `ヴァルハイト城・${floorInfo.floorName}`);
       const currentStats = calculateEffectiveStats(player);
 
       messageText =
 `🏯【城郭強襲戦記：${floorInfo.floorName}】
 
-${story}${guerrillaNote}${guardianFooter}
+${story}${guerrillaNote}${discoveryUrgentNote}${guardianFooter}
 
 ━━━━━━━━━━━━━━━━━━
 📍 現在地：ヴァルハイト城（第${nextFloorNum}層制圧）
@@ -470,6 +492,7 @@ ${story}${guerrillaNote}${guardianFooter}
         );
       }
 
+      const discoveryUrgentNote = getAwaitingDiscoveryFrontlineNotice(player);
       const guardianFooter = await tickRelicAndCheckGuardian(player, `ヴァルハイト城・${floorInfo.floorName}`);
       const currentStats = calculateEffectiveStats(player);
 
@@ -483,7 +506,7 @@ ${story}${guerrillaNote}${guardianFooter}
 ${story}
 
 🔥 魔軍卿 ガルガン：
-「ガハハハ！！ 天守閣のてっぺんまで綺麗にぶんどってきやがったな${player.name}！ 偽善者どもの泣きっ面が最高に愉快だぜ！！」${factionHook}${guerrillaNote}${guardianFooter}
+「ガハハハ！！ 天守閣のてっぺんまで綺麗にぶんどってきやがったな${player.name}！ 偽善者どもの泣きっ面が最高に愉快だぜ！！」${factionHook}${guerrillaNote}${discoveryUrgentNote}${guardianFooter}
 
 ━━━━━━━━━━━━━━━━━━
 📍 現在地：${getCurrentLocationName(player)}
@@ -511,6 +534,7 @@ ${story}
       }
     );
 
+    const discoveryUrgentNote = getAwaitingDiscoveryFrontlineNotice(player);
     const guardianFooter = await tickRelicAndCheckGuardian(player, `ヴァルハイト城・${floorInfo.floorName}`);
     const currentStats = calculateEffectiveStats(player);
 
@@ -520,7 +544,7 @@ ${story}
 ${story}
 
 💥 城内でかき集めていた戦利品袋【 ${lostBagText} 】はすべて散逸したが、キメラ武器のスロットは無傷のまま城門前の『🌉 ヴァルハイト跳ね橋』へ踏みとどまった！
-${battleData.hint}${guerrillaNote}${guardianFooter}
+${battleData.hint}${guerrillaNote}${discoveryUrgentNote}${guardianFooter}
 
 ━━━━━━━━━━━━━━━━━━
 📍 現在地：${getCurrentLocationName(player)}（1歩後退）
@@ -552,6 +576,7 @@ export async function executeTwoStepRaid(lineClient, userId, player, routeStr) {
   clearAwakenedSixthSlot(player, true);
   player.pendingFactionStory = null;
   player.pendingKingdomStory = null;
+  player.selectedRegion = null;
 
   const [step1Key, step2Key] = routeStr.split('>');
   const loc1 = MAP_LOCATIONS[step1Key];
@@ -581,6 +606,7 @@ export async function executeTwoStepRaid(lineClient, userId, player, routeStr) {
       sceneType: 'RAID',
     });
 
+    const discoveryUrgentNote = getAwaitingDiscoveryFrontlineNotice(player);
     const guardianFooter = await tickRelicAndCheckGuardian(player, loc1.name);
     const currentStats = calculateEffectiveStats(player);
     await savePlayer(player);
@@ -590,7 +616,7 @@ export async function executeTwoStepRaid(lineClient, userId, player, routeStr) {
 
 ${story1}
 
-${battle1.hint}${guerrillaTickNote}${guardianFooter}
+${battle1.hint}${guerrillaTickNote}${discoveryUrgentNote}${guardianFooter}
 
 ━━━━━━━━━━━━━━━━━━
 📍 現在地：${getCurrentLocationName(player)}（第1地点より後退）
@@ -637,6 +663,7 @@ ${battle1.hint}${guerrillaTickNote}${guardianFooter}
       rawDropName: rawDrop1,
     });
     const relicStageNotice = await checkAndAdvanceRelicStage(player, loc1.chapter === 3, false);
+    const discoveryUrgentNote = getAwaitingDiscoveryFrontlineNotice(player);
     const guardianFooter = await tickRelicAndCheckGuardian(player, loc1.name);
     const currentStats = calculateEffectiveStats(player);
     await savePlayer(player);
@@ -648,7 +675,7 @@ ${battle1.hint}${guerrillaTickNote}${guardianFooter}
         text:
 `🌙【夜間遠征記：重要拠点『${loc1.name}』制圧】
 
-${story1}${spawnLine}${relicStageNotice}${guardianFooter}
+${story1}${spawnLine}${relicStageNotice}${discoveryUrgentNote}${guardianFooter}
 
 ━━━━━━━━━━━━━━━━━━
 📍 現在地：${getCurrentLocationName(player)}
@@ -667,7 +694,7 @@ ${story1}${spawnLine}${relicStageNotice}${guardianFooter}
     if ((player.inventory['兵糧'] || 0) > 0) {
       player.inventory['兵糧'] -= 1;
       player.hp = stats.maxHp;
-      autoHealLog = `🍖【幕間野営】焚き火を囲んで兵糧1袋を平らげ、部隊HPを100%全快（${player.hp}/${stats.maxHp}）して第2戦へ突入！（残兵糧:${player.inventory['兵糧']}袋）`;
+      autoHealLog = `🍖【幕間野営】兵糧1袋を平らげ、部隊HPを100%全快（${player.hp}/${stats.maxHp}）して第2戦へ突入！（残兵糧:${player.inventory['兵糧']}袋）`;
     } else {
       autoHealLog = `⚠️【兵糧枯渇】手持ちの兵糧が0袋のため、傷を抱えたまま（HP:${player.hp}/${stats.maxHp}）第2地点『${loc2.name}』へ強行突入！`;
     }
@@ -730,6 +757,7 @@ ${story1}${spawnLine}${relicStageNotice}${guardianFooter}
   // 夜間2連遠征は1行動扱いのため、第3戦線での勝利判定＆聖剣カウントを1回進める
   const wonInCh3 = (loc1.chapter === 3 && battle1.result === 'WIN') || (loc2.chapter === 3 && battle2.result === 'WIN');
   const relicStageNotice = await checkAndAdvanceRelicStage(player, wonInCh3, false);
+  const discoveryUrgentNote = getAwaitingDiscoveryFrontlineNotice(player);
   const guardianFooter = await tickRelicAndCheckGuardian(player, loc2.name);
   const finalStats = calculateEffectiveStats(player);
 
@@ -744,7 +772,7 @@ ${story1}
 ${autoHealLog}
 
 ⚔️《第2幕：${loc2.name}》
-${story2}${step2Extra}${guerrillaFooter}${relicStageNotice}${guardianFooter}
+${story2}${step2Extra}${guerrillaFooter}${relicStageNotice}${discoveryUrgentNote}${guardianFooter}
 
 ━━━━━━━━━━━━━━━━━━
 📍 現在地：${getCurrentLocationName(player)}
@@ -768,13 +796,14 @@ ${story2}${step2Extra}${guerrillaFooter}${relicStageNotice}${guardianFooter}
 }
 
 // ==========================================
-// 2-B. 本拠地『荒れ野の廃砦』地下封印殿・発掘隊強襲イベント処理
+// 2-B. 本拠地『荒れ野の廃砦』不法侵入発掘隊・撃退戦（第1ステップ）
 // ==========================================
 async function executeRelicExcavationRaid(lineClient, userId, player) {
   clearAwakenedSixthSlot(player, true);
   player.pendingFactionStory = null;
   player.pendingKingdomStory = null;
   player.reservedLocation = null;
+  player.selectedRegion = null;
   player.useTrumpItem = false;
 
   const r = player.legendaryRelic;
@@ -791,47 +820,42 @@ async function executeRelicExcavationRaid(lineClient, userId, player) {
   let extraFooter = '';
 
   if (battleData.result === 'WIN') {
-    r.hasRelic = true;
-    r.wins = 0;
-    r.turnsUntilGuardian = 5;
+    // ここではまだ聖剣を発見せず、次の「滞在（または再帰還）」で発見する待ち状態にする
+    r.awaitingDiscovery = true;
     r.cooldown = 0;
     r.attemptCount = (r.attemptCount || 0) + 1;
-    r.latestReport = '本拠地の地下で発掘隊を撃破し、封印石ごと白銀の刃を奪取中';
+    r.latestReport = '廃砦から掘削隊を叩き出した（砦の奥に掘り返された土砂が散乱中）';
 
     const rSteel = addLootWithCap(player, '王国鋼', 1);
-    const rStone = addLootWithCap(player, '魔導石', 1);
+    const rPlate = addLootWithCap(player, '装甲板', 1);
     const parts = [];
     if (rSteel.added > 0) parts.push(`⛏️王国鋼×${rSteel.added}`);
-    if (rStone.added > 0) parts.push(`🔮魔導石×${rStone.added}`);
+    if (rPlate.added > 0) parts.push(`🛡️装甲板×${rPlate.added}`);
     lootText = parts.length > 0 ? parts.join(' / ') : '⚠️武器庫満杯のため破棄';
 
     const stats = calculateEffectiveStats(player);
     player.hp = stats.maxHp;
 
     extraHeader = isRepeat
-      ? `🦇「隊長、また王国の連中が懲りずに本拠地の地下へ潜り込んでやがりますぜ！」\n`
-      : `🦇「隊長！ 戻ってきてくれたんですね！ 本拠地の地下封印殿に王国の発掘隊が入り込んでやがります、ぶっ潰しましょう！」\n`;
+      ? `🦇「隊長、また王国の連中が懲りずに廃砦の敷地内へ踏み込んで地面を掘り返してやがりますぜ！」\n`
+      : `🦇「隊長！ 戻ってきてくれたんですね！ 分厚い鉄鎧の精鋭と掘削隊が廃砦の奥に土足で入り込んで地面を掘り返してやがります、叩き出しましょう！」\n`;
 
     extraFooter =
-      `\n\n🔥 魔軍卿 ガルガン：\n` +
-      `「ガハハハ！！ 俺たちの本拠地に土足で踏み込みやがって！ 剣が抜けねえなら、その勿体ぶった封印石の台座ごとぶち折って担いでいけ！ 王様の泣きっ面が楽しみだぜ！！」\n` +
-      `👑（※発掘隊壊滅の報が王都に届いたようだ。下の『👑 王都の密談を見る』を確認せよ）`;
-
-    await sleep(600);
-    player.pendingKingdomStory = await generateKingdomReaction('STOLEN', player);
+      `\n\n🦇【荒れ野の廃砦・留守居隊】\n` +
+      `「ケッ、人の根城に土足で踏み込んで穴掘りたあ、一体何のつもりなんだか……。おい野郎ども、奴らが散らかしていったツルハシや土砂が砦の奥に転がってるぞ。隊長、ひとまず『⛺ 廃砦に滞在（見回り・休息）』して後片付けしちまいましょうや」`;
   } else {
     player.hp = 1;
-    extraFooter = `\n\n${battleData.hint}\n（※態勢を整えて再び『荒れ野の廃砦』へ帰還すれば再突入できるぞ）`;
+    extraFooter = `\n\n${battleData.hint}\n（※態勢を整えて再び『荒れ野の廃砦』へ帰還すれば奴らを叩き出せるぞ）`;
   }
 
   const story = await generateRaidNarrative(
-    '本拠地・荒れ野の廃砦（地下封印殿）',
+    '本拠地・荒れ野の廃砦',
     battleData,
     player,
     enemy,
     lootText,
     {
-      locDesc: 'ガルガン軍の本拠地である荒れ野の廃砦の地下奥深くに眠る古代の封印殿',
+      locDesc: 'ガルガン軍の本拠地である荒れ野の廃砦の敷地内に土足で侵入し地面を掘り返していた王国の発掘部隊との衝突',
       sceneType: 'RELIC_EXCAVATION',
       isRepeatExcavation: isRepeat,
     }
@@ -841,7 +865,7 @@ async function executeRelicExcavationRaid(lineClient, userId, player) {
   const currentStats = calculateEffectiveStats(player);
 
   const messageText =
-`🏺【本拠地強襲戦記：荒れ野の廃砦・地下封印殿】
+`⚔️【本拠地防衛戦記：荒れ野の廃砦・発掘隊撃退】
 
 ${extraHeader}${story}${extraFooter}${guerrillaTickNote}
 
@@ -849,6 +873,272 @@ ${extraHeader}${story}${extraFooter}${guerrillaTickNote}
 📍 現在地：${getCurrentLocationName(player)}
 ❤️ 部隊HP：${player.hp} / ${currentStats.maxHp}${battleData.result === 'WIN' ? '（本拠地100%全快！）' : '（要回復）'}
 🎒 戦利品：${lootText}${formatRelicStatusLine(player)}
+━━━━━━━━━━━━━━━━━━`;
+
+  try {
+    await lineClient.pushMessage({
+      to: userId,
+      messages: [{
+        type: 'text',
+        text: messageText,
+        quickReply: buildRaidQuickReply(player),
+      }],
+    });
+  } catch (err) {
+    console.error(`プッシュ送信エラー (${userId}):`, err);
+  }
+}
+
+// ==========================================
+// 2-C. 本拠地『荒れ野の廃砦』滞在・帰還時のクレーター崩落＆聖剣発見イベント（第2ステップ）
+// ==========================================
+async function executeRelicDiscoveryEvent(lineClient, userId, player, isFromReturn = false) {
+  clearAwakenedSixthSlot(player, true);
+  player.pendingFactionStory = null;
+  player.pendingKingdomStory = null;
+  player.reservedLocation = null;
+  player.selectedRegion = null;
+  player.useTrumpItem = false;
+
+  player.currentLocation = 'アジト';
+  player.currentBase = '廃砦';
+
+  const r = player.legendaryRelic;
+  r.awaitingDiscovery = false;
+  r.hasRelic = true;
+  r.wins = 0;
+  r.turnsUntilGuardian = 5;
+  r.cooldown = 0;
+  r.latestReport = '砲撃跡のクレーターから露出した『封印石の聖剣』を台座ごと奪取中';
+
+  const rStone = addLootWithCap(player, '魔導石', 1);
+  const lootText = rStone.added > 0 ? `🔮魔導石×${rStone.added}` : '⚠️武器庫満杯のため破棄';
+
+  const stats = calculateEffectiveStats(player);
+  player.hp = stats.maxHp;
+
+  const guerrillaTickNote = tickActiveGuerrilla(player);
+
+  await sleep(600);
+  player.pendingKingdomStory = await generateKingdomReaction('STOLEN', player);
+
+  const introParagraph = isFromReturn
+    ? `急報を受けて『荒れ野の廃砦』へ駆け戻ると、砦の奥――かつて魔道軍のゼノビアが撤退間際に腹いせで撃ち込んだ魔導砲撃のクレーターの周りで、留守居隊の部下たちが息を呑んで立ち尽くしていた。`
+    : `発掘隊を叩き出してから数刻後。砦で休息を取りつつ、奴らが放り出して逃げたツルハシや掘り返された土砂の後片付けをしていた最中だった。砦の奥――かつて魔道軍のゼノビアが撤退間際に腹いせで撃ち込んだ魔導砲撃のクレーターの底が、これまでの乱戦と掘削の振動でズズッ……と音を立てて陥没した！`;
+
+  const discoveryText =
+`🏺【荒れ野の廃砦・砲撃跡クレーターの異変】
+
+${introParagraph}
+
+「……おい隊長、来てみろ！ ゼノビアの女傑が昔ぶっ放した魔導砲撃のクレーターの底から、とんでもねえもんが顔を出してるぜ！」
+
+崩れ落ちた土砂の下から姿を現したのは、当時の魔導砲撃の直撃で深いヒビが入っていた巨大な『古代の封印の蓋』と、その裂け目の台座に突き刺さったまま鈍い白銀の光を放つ一振りの剣だった。
+${player.leader}が柄を掴んで力任せに引っ張るが、剣は台座の封石と一体化しておりピクリとも抜けない。
+
+🔥 魔軍卿 ガルガン：
+「ガハハハ！！ なるほどな、王国の連中がこんなボロ砦を血眼で掘り返してたのはコレが目当てかよ！ おい${player.name}、剣が抜けねえなら、そのヒビ割れた封印石の台座ごと『${player.weapon}』でぶち折って担いでいけ！ 王様の泣きっ面が楽しみだぜ！！」
+
+鈍い破砕音とともに封石の台座を根元から力ずくで叩き折り、一行は石塊ごと白銀の刃を肩に担ぎ上げた！
+👑（※遺物強奪の衝撃が王都に届いたようだ。下の『👑 王都の密談を見る』を確認せよ）${guerrillaTickNote}
+
+━━━━━━━━━━━━━━━━━━
+📍 現在地：${getCurrentLocationName(player)}
+❤️ 部隊HP：${player.hp} / ${stats.maxHp}（本拠地100%全快！）
+🎒 副産物：${lootText}${formatRelicStatusLine(player)}
+━━━━━━━━━━━━━━━━━━`;
+
+  await savePlayer(player);
+
+  try {
+    await lineClient.pushMessage({
+      to: userId,
+      messages: [{
+        type: 'text',
+        text: discoveryText,
+        quickReply: buildRaidQuickReply(player),
+      }],
+    });
+  } catch (err) {
+    console.error(`プッシュ送信エラー (${userId}):`, err);
+  }
+}
+
+// ==========================================
+// 2-D. 本拠地『荒れ野の廃砦』通常の滞在（見回り・休息）処理
+// ==========================================
+async function executeRuinsFortNormalStay(lineClient, userId, player) {
+  player.pendingFactionStory = null;
+  player.pendingKingdomStory = null;
+  player.reservedLocation = null;
+  player.selectedRegion = null;
+  player.useTrumpItem = false;
+  player.currentLocation = 'アジト';
+  player.currentBase = '廃砦';
+
+  const stats = calculateEffectiveStats(player);
+  player.hp = stats.maxHp;
+
+  const hadActiveGuerrillaBefore = Boolean(player.activeGuerilla);
+  const guerrillaTickNote = tickActiveGuerrilla(player);
+  const newGuerrillaNotice = (!hadActiveGuerrillaBefore && !player.activeGuerilla)
+    ? trySpawnGuerrillaRaid(player)
+    : null;
+  const guerrillaFooter = newGuerrillaNotice ? `\n\n${newGuerrillaNotice}` : guerrillaTickNote;
+
+  const garrisonReport = getRuinsFortGarrisonReport(player);
+  const guardianFooter = await tickRelicAndCheckGuardian(player, '荒れ野の廃砦');
+  const finalStats = calculateEffectiveStats(player);
+
+  await savePlayer(player);
+
+  const stayMessage =
+`⛺【荒れ野の廃砦：砦の見回り・休息】
+
+砦の周囲を見回り、武具の手入れをしながら部隊の息を整えた。
+
+${garrisonReport}${guerrillaFooter}${guardianFooter}
+
+━━━━━━━━━━━━━━━━━━
+📍 現在地：${getCurrentLocationName(player)}
+❤️ 部隊HP：${player.hp} / ${finalStats.maxHp}（100%全快！）${formatRelicStatusLine(player)}
+━━━━━━━━━━━━━━━━━━`;
+
+  try {
+    await lineClient.pushMessage({
+      to: userId,
+      messages: [{
+        type: 'text',
+        text: stayMessage,
+        quickReply: buildRaidQuickReply(player),
+      }],
+    });
+  } catch (err) {
+    console.error(`プッシュ送信エラー (${userId}):`, err);
+  }
+}
+
+// ==========================================
+// 2-E. 制圧済み関門・占領下通過イベント処理（全5種・1行動消費）
+// ==========================================
+async function executeOccupiedGateEvent(lineClient, userId, player, locKey, locData) {
+  player.pendingFactionStory = null;
+  player.pendingKingdomStory = null;
+  player.reservedLocation = null;
+  player.selectedRegion = null;
+  player.useTrumpItem = false;
+
+  let movedAwaySlotLostNotice = '';
+  if (player.awakenedBoss && locKey !== player.awakenedBoss) {
+    clearAwakenedSixthSlot(player, true);
+    movedAwaySlotLostNotice = `\n（※別エリアへ移動したため、覚醒していた『第6スロット』は消滅した）`;
+  }
+
+  player.currentLocation = locKey;
+  if (locData.chapter === 1) player.currentBase = '廃砦';
+  else if (locData.chapter === 2) player.currentBase = '要塞門';
+  else if (locData.chapter === 3) player.currentBase = '大聖堂';
+
+  const hadActiveGuerrillaBefore = Boolean(player.activeGuerilla);
+  const guerrillaTickNote = tickActiveGuerrilla(player);
+
+  const ev = rollOccupiedGateEvent();
+  const iconMap = { '王国鋼': '⛏️', '装甲板': '🛡️', '黒火薬': '🧨', '魔導石': '🔮', '兵糧': '🍞' };
+  const stats = calculateEffectiveStats(player);
+
+  let eventBody = '';
+  let lootText = 'なし';
+
+  if (ev.type === 'JACKPOT') {
+    const rStone = addLootWithCap(player, '魔導石', 1);
+    const rPowder = addLootWithCap(player, '黒火薬', 1);
+    const rRation = addLootWithCap(player, '兵糧', 1);
+    const parts = [];
+    if (rStone.added > 0) parts.push(`🔮魔導石×${rStone.added}`);
+    if (rPowder.added > 0) parts.push(`🧨黒火薬×${rPowder.added}`);
+    if (rRation.added > 0) parts.push(`🍞兵糧×${rRation.added}`);
+
+    let bonusTrumpNote = '';
+    if (!player.trumpItem) {
+      const allTrumps = ['oil_cloth', 'acid_bottle', 'ash_bag'];
+      const pickedTrump = allTrumps[Math.floor(Math.random() * allTrumps.length)];
+      player.trumpItem = pickedTrump;
+      const tInfo = TRUMP_ITEMS[pickedTrump];
+      if (tInfo) {
+        parts.push(`${tInfo.icon}${tInfo.name}（切り札）`);
+        bonusTrumpNote = `\nさらに木箱の奥から対ボス切り札『${tInfo.icon}${tInfo.name}（${tInfo.shortDesc}）』を掘り当てた！`;
+      }
+    }
+
+    lootText = parts.length > 0 ? parts.join(' / ') : '⚠️武器庫満杯のため破棄';
+    eventBody =
+      `占領下の『${locData.name}』の詰め所を漁っていた駐留部隊の部下が、石畳の下に隠されていた秘密の二重底を金槌で叩き割っていた！\n\n` +
+      `「隊長、いいところに来た！ ここの元守将が壁の裏と床下に隠し持ってた特務物資を見つけやしたぜ。城の魔軍卿どもに報告する前に、俺たちで山分けしましょうや！」${bonusTrumpNote}`;
+
+  } else if (ev.type === 'EXTORTION') {
+    const pool = ['王国鋼', '装甲板', '黒火薬', '兵糧'];
+    const chosen = pool[Math.floor(Math.random() * pool.length)];
+    const res = addLootWithCap(player, chosen, 1);
+    lootText = res.added > 0
+      ? `${iconMap[chosen]}${chosen}×${res.added}`
+      : `${iconMap[chosen]}${chosen}（⚠️武器庫満杯のため破棄）`;
+    eventBody =
+      `占領下の『${locData.name}』の脇道をコソコソ抜けようとした人間軍の敗残兵を、見張りの部下が首根っこを掴んで引きずり出した。\n\n` +
+      `「おい、ここは今じゃガルガン軍の関所だ。命が惜しけりゃ背中の荷物を全部置いていきな！」\n` +
+      `震え上がる敗残兵から通行料代わりに物資を巻き上げ、尻を蹴り飛ばして追い払った。`;
+
+  } else if (ev.type === 'SCRAP') {
+    const pool = ['王国鋼', '装甲板'];
+    const chosen = pool[Math.floor(Math.random() * pool.length)];
+    const res = addLootWithCap(player, chosen, 1);
+    lootText = res.added > 0
+      ? `${iconMap[chosen]}${chosen}×${res.added}`
+      : `${iconMap[chosen]}${chosen}（⚠️武器庫満杯のため破棄）`;
+    eventBody =
+      `占領下の『${locData.name}』の隅に積み上げられた人間騎士の砕けた鎧や大盾を、駐留部隊の仲間が金槌で叩き割って使える鉄塊を剥ぎ取っていた。\n\n` +
+      `「おう隊長、ちょうど使い物になりそうな上等な鉄屑が剥がれたところだ。持っていきな！」\n` +
+      `放り投げられた資材を背嚢に押し込み、関門を後にした。`;
+
+  } else if (ev.type === 'FIRST_AID') {
+    const healAmount = Math.max(1, Math.floor(stats.maxHp * 0.25));
+    const prevHp = player.hp;
+    player.hp = Math.min(stats.maxHp, player.hp + healAmount);
+    const actualHeal = player.hp - prevHp;
+    lootText = `❤️部隊HP回復（＋${actualHeal}）`;
+    eventBody =
+      `占領下の『${locData.name}』を固める駐留兵が、人間軍から分捕った度数の高い安酒と汚れた包帯を投げてよこした。\n\n` +
+      `「傷が膿む前にそいつをぶっかけて塞いでおきな、隊長！」\n` +
+      `安酒を傷口に浴びせて荒っぽく消毒し、ボロ布をきつく巻き直して部隊の傷を手当した（HP ${prevHp} ➔ ${player.hp}/${stats.maxHp}）。`;
+
+  } else {
+    lootText = 'なし（情報収集）';
+    eventBody =
+      `占領下の『${locData.name}』を通過すると、関門の鉄柵に縛り付けた捕虜や密偵を駐留部隊が締め上げていた。\n\n` +
+      `${ev.rumorText}`;
+  }
+
+  const newGuerrillaNotice = (!hadActiveGuerrillaBefore && !player.activeGuerilla)
+    ? trySpawnGuerrillaRaid(player)
+    : null;
+  const guerrillaFooter = newGuerrillaNotice ? `\n\n${newGuerrillaNotice}` : guerrillaTickNote;
+
+  const discoveryUrgentNote = getAwaitingDiscoveryFrontlineNotice(player);
+  const guardianFooter = await tickRelicAndCheckGuardian(player, locData.name);
+  const finalStats = calculateEffectiveStats(player);
+
+  await savePlayer(player);
+
+  const trumpLine = player.trumpItem ? `\n🃏 切り札：${getTrumpItemDisplay(player)}` : '';
+
+  const messageText =
+`${ev.title}
+
+${eventBody}${movedAwaySlotLostNotice}${guerrillaFooter}${discoveryUrgentNote}${guardianFooter}
+
+━━━━━━━━━━━━━━━━━━
+📍 現在地：${getCurrentLocationName(player)}
+❤️ 部隊HP：${player.hp} / ${finalStats.maxHp}
+🎒 関門収得：${lootText}${trumpLine}${formatRelicStatusLine(player)}
 ━━━━━━━━━━━━━━━━━━`;
 
   try {
@@ -892,9 +1182,25 @@ export async function executeScheduledRaids(lineClient, targetUserId = null, for
       continue;
     }
 
-    // 新規戦闘に入るため、前回の未読幕間劇があればクリアする
+    // 本拠地『荒れ野の廃砦』での滞在コマンド、または発見待ち状態での未予約定時経過
+    const isAtRuinsFort = player.currentLocation === 'アジト' && player.currentBase === '廃砦';
+    if (
+      !forceDefense &&
+      (player.reservedLocation === '滞在_廃砦' ||
+        (!player.reservedLocation && isAtRuinsFort && player.legendaryRelic?.awaitingDiscovery))
+    ) {
+      if (player.legendaryRelic?.awaitingDiscovery) {
+        await executeRelicDiscoveryEvent(lineClient, userId, player, false);
+      } else {
+        await executeRuinsFortNormalStay(lineClient, userId, player);
+      }
+      continue;
+    }
+
+    // 新規戦闘・移動に入るため、前回の未読幕間劇および一時戦線選択をクリアする
     player.pendingFactionStory = null;
     player.pendingKingdomStory = null;
+    player.selectedRegion = null;
 
     const currentRegion = getActiveRegion(player);
     const defaultLoc = currentRegion === 3
@@ -903,19 +1209,31 @@ export async function executeScheduledRaids(lineClient, targetUserId = null, for
     const locKey = player.reservedLocation || (player.currentLocation !== 'アジト' ? player.currentLocation : defaultLoc);
     const locData = MAP_LOCATIONS[locKey] || MAP_LOCATIONS[defaultLoc];
 
-    // 本拠地『荒れ野の廃砦』への帰還時に、段階3到達済み＆未所持＆クールダウン明けなら発掘隊との奪取戦へ分岐！
+    // 本拠地『荒れ野の廃砦』への帰還時の特別分岐
     const isReturningToRuinsFort =
       !forceDefense &&
       (locKey === '帰還_廃砦' || (locKey === '帰還' && currentRegion === 1));
 
-    if (
-      isReturningToRuinsFort &&
-      player.legendaryRelic &&
-      player.legendaryRelic.stage >= 3 &&
-      !player.legendaryRelic.hasRelic &&
-      (player.legendaryRelic.cooldown || 0) <= 0
-    ) {
-      await executeRelicExcavationRaid(lineClient, userId, player);
+    if (isReturningToRuinsFort && player.legendaryRelic) {
+      // すでに発掘隊を撃退済みで、前線で急報を受けて廃砦へ戻ってきた場合は発見イベントを即時発火
+      if (player.legendaryRelic.awaitingDiscovery && !player.legendaryRelic.hasRelic) {
+        await executeRelicDiscoveryEvent(lineClient, userId, player, true);
+        continue;
+      }
+      // 段階3到達済み＆未所持＆クールダウン明けなら、敷地内の発掘隊との撃退戦へ分岐
+      if (
+        player.legendaryRelic.stage >= 3 &&
+        !player.legendaryRelic.hasRelic &&
+        (player.legendaryRelic.cooldown || 0) <= 0
+      ) {
+        await executeRelicExcavationRaid(lineClient, userId, player);
+        continue;
+      }
+    }
+
+    // 制圧済みの関門（検問所・前哨砦・工房跡・回廊関門など）への移動時はボス戦を起こさず5種イベントへ分岐
+    if (!forceDefense && locData.isBoss && !locData.isChallenge && isBossGateCleared(player, locKey)) {
+      await executeOccupiedGateEvent(lineClient, userId, player, locKey, locData);
       continue;
     }
 
@@ -970,6 +1288,7 @@ export async function executeScheduledRaids(lineClient, targetUserId = null, for
         sceneType: 'DEFENSE',
       });
 
+      const discoveryUrgentNote = getAwaitingDiscoveryFrontlineNotice(player);
       const guardianFooter = await tickRelicAndCheckGuardian(player, baseName);
       const currentStats = calculateEffectiveStats(player);
       await savePlayer(player);
@@ -977,7 +1296,7 @@ export async function executeScheduledRaids(lineClient, targetUserId = null, for
       const messageText =
 `🚨【緊急迎撃戦記：${baseName}防衛戦】
 
-${story}${interludeText}${guerrillaTickNote}${guardianFooter}
+${story}${interludeText}${guerrillaTickNote}${discoveryUrgentNote}${guardianFooter}
 
 ━━━━━━━━━━━━━━━━━━
 📍 現在地：${getCurrentLocationName(player)}
@@ -1081,6 +1400,7 @@ ${story}${interludeText}${guerrillaTickNote}${guardianFooter}
         locData.chapter === 3 && battleData.result === 'WIN',
         false
       );
+      const discoveryUrgentNote = getAwaitingDiscoveryFrontlineNotice(player);
       const guardianFooter = await tickRelicAndCheckGuardian(player, locData.name);
       const currentStats = calculateEffectiveStats(player);
 
@@ -1089,7 +1409,7 @@ ${story}${interludeText}${guerrillaTickNote}${guardianFooter}
       const messageText =
 `⚡【横取り奇襲戦記：${locData.name}】
 
-${story}${extraNotes}${relicStageNotice}${guardianFooter}
+${story}${extraNotes}${relicStageNotice}${discoveryUrgentNote}${guardianFooter}
 
 ━━━━━━━━━━━━━━━━━━
 📍 現在地：${getCurrentLocationName(player)}
@@ -1114,7 +1434,7 @@ ${story}${extraNotes}${relicStageNotice}${guardianFooter}
     }
 
     // ----------------------------------------------------
-    // B. 通常略奪 ＆ 関門ボス戦 ＆ 帰還戦
+    // B. 通常略奪 ＆ 未制圧関門ボス戦 ＆ 帰還戦
     // ----------------------------------------------------
     let movedAwaySlotLostNotice = '';
     if (player.awakenedBoss && locKey !== player.awakenedBoss) {
@@ -1217,15 +1537,9 @@ ${story}${extraNotes}${relicStageNotice}${guardianFooter}
         player.hp = battleData.stats.maxHp;
         interludeText += movedAwaySlotLostNotice;
 
-        // 本拠地『荒れ野の廃砦』へ通常帰還した際の留守番部下の様子
-        if (player.currentBase === '廃砦' && (player.ch1Step >= 3 || player.chapter >= 2)) {
-          if (player.legendaryRelic?.hasRelic) {
-            interludeText += `\n\n🦇【本拠地『荒れ野の廃砦』の部下】\n「お帰りなさい隊長！ ……って、地下の封印石ごと抱えて前線を暴れ回ってるんですかい！？ 流石俺たちの隊長だ！」`;
-          } else if ((player.legendaryRelic?.cooldown || 0) > 0) {
-            interludeText += `\n\n🦇【本拠地『荒れ野の廃砦』の部下】\n「お帰りなさい隊長！ 地下の遺物は番人の手で再び封印されたようで、今は本拠地の周りも静かなもんですぜ」`;
-          } else {
-            interludeText += `\n\n🦇【本拠地『荒れ野の廃砦』の部下】\n「お帰りなさい隊長！ ここが俺たちの最初の根城ですからね、いつでも羽を伸ばしていってくださいぜ！」`;
-          }
+        // 本拠地『荒れ野の廃砦』へ帰還した際の留守居隊の無骨な報告
+        if (player.currentBase === '廃砦') {
+          interludeText += `\n\n${getRuinsFortGarrisonReport(player)}`;
         }
 
       } else if (locData.isDrawbridge) {
@@ -1410,6 +1724,12 @@ ${story}${extraNotes}${relicStageNotice}${guardianFooter}
     const relicStageNotice = await checkAndAdvanceRelicStage(player, wonInCh3, isFirstAlbertWinTurn);
     if (relicStageNotice) {
       interludeText += relicStageNotice;
+    }
+
+    // 発見待ち状態で前線にいる場合の急報フォロー
+    const discoveryUrgentNote = getAwaitingDiscoveryFrontlineNotice(player);
+    if (discoveryUrgentNote) {
+      interludeText += discoveryUrgentNote;
     }
 
     // 1行動経過による聖剣クールダウン＆守り神襲来判定
