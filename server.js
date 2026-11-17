@@ -249,18 +249,26 @@ app.post('/webhook', middleware(lineConfig), async (req, res) => {
       let { player } = await getOrCreatePlayer(userId);
 
       // ------------------------------------------
-      // 0-B. プロローグ手動確認コマンド
+      // 0-B. リセット・開幕・プロローグ開始コマンド
       // ------------------------------------------
-      if (userText === 'プロローグ') {
+      if (userText === 'プロローグ' || userText === 'リセット' || userText === '開幕') {
         let displayName = player.leader || 'シンジ';
         try {
           const profile = await lineClient.getProfile(userId);
           if (profile && profile.displayName) displayName = profile.displayName;
         } catch (_) {}
-        const updated = await getOrCreatePlayer(userId, displayName);
+
+        if (userText === 'リセット' || userText === '開幕') {
+          player = normalizePlayer(createInitialPlayer(userId, displayName), userId);
+          await savePlayer(player);
+        } else {
+          const updated = await getOrCreatePlayer(userId, displayName);
+          player = updated.player;
+        }
+
         await lineClient.replyMessage({
           replyToken: event.replyToken,
-          messages: [buildPrologueMessage(updated.player.leader)],
+          messages: [buildPrologueMessage(player.leader)],
         });
         continue;
       }
@@ -637,19 +645,12 @@ HP:${player.hp}/${resetStats.maxHp} | 攻:${resetStats.atk} | 防:${resetStats.d
       }
 
       // ------------------------------------------
-      // A. 開幕・リセット・地図・作戦地図
+      // A. 地図・作戦地図
       // ------------------------------------------
       if (
-        userText === '開幕' ||
-        userText === 'リセット' ||
         userText === '地図' ||
         userText === '作戦地図'
       ) {
-        if (userText === '開幕' || userText === 'リセット') {
-          player = normalizePlayer(createInitialPlayer(userId, player.leader), userId);
-          await savePlayer(player);
-        }
-
         const curLocName = getCurrentLocationName(player);
         const reservedName = getReservedDisplayName(player.reservedLocation);
         const resNotice = player.reservedLocation ? `（次回予約: 『${reservedName}』）` : '';
